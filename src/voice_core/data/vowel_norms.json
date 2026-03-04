@@ -1,0 +1,21 @@
+{
+  "_description": "Per-vowel formant reference norms from acousticgender.space dataset (mixed male+female). Used for phoneme-aware gesture z-scoring. Index 0=F0, 1=F1, 2=F2, 3=F3. Each entry has mean and stdev.",
+  "_source": "Research/gender-voice-visualization/stats.json — derived from mixed-gender corpus",
+  "_vowel_centroids_description": "F1/F2 centroids for vowel detection in real-time mode (no forced alignment). Extracted from the means below.",
+
+  "vowels": {
+    "AA": {"f1_mean": 700.96, "f1_std": 141.64, "f2_mean": 1147.66, "f2_std": 175.22, "f3_mean": 2384.58, "f3_std": 421.38, "label": "/ɑ/ (hot)"},
+    "AE": {"f1_mean": 710.97, "f1_std": 171.04, "f2_mean": 1644.76, "f2_std": 318.89, "f3_mean": 2457.52, "f3_std": 349.54, "label": "/æ/ (hat)"},
+    "AH": {"f1_mean": 566.63, "f1_std": 127.67, "f2_mean": 1306.15, "f2_std": 214.08, "f3_mean": 2388.04, "f3_std": 426.70, "label": "/ʌ/ (hut)"},
+    "AO": {"f1_mean": 612.01, "f1_std": 156.48, "f2_mean": 1087.37, "f2_std": 243.49, "f3_mean": 2522.48, "f3_std": 450.76, "label": "/ɔ/ (caught)"},
+    "EH": {"f1_mean": 594.66, "f1_std": 120.52, "f2_mean": 1631.24, "f2_std": 278.88, "f3_mean": 2403.29, "f3_std": 337.60, "label": "/ɛ/ (bet)"},
+    "ER": {"f1_mean": 527.49, "f1_std": 117.17, "f2_mean": 1519.06, "f2_std": 279.51, "f3_mean": 2235.31, "f3_std": 394.33, "label": "/ɝ/ (bird)"},
+    "EY": {"f1_mean": 482.06, "f1_std": 106.68, "f2_mean": 2026.13, "f2_std": 394.81, "f3_mean": 2665.45, "f3_std": 289.51, "label": "/eɪ/ (bait)"},
+    "IH": {"f1_mean": 467.33, "f1_std":  98.66, "f2_mean": 1902.75, "f2_std": 356.39, "f3_mean": 2567.68, "f3_std": 307.08, "label": "/ɪ/ (bit)"},
+    "IY": {"f1_mean": 375.23, "f1_std": 133.91, "f2_mean": 2111.86, "f2_std": 474.37, "f3_mean": 2708.16, "f3_std": 315.75, "label": "/i/ (beat)"},
+    "OW": {"f1_mean": 519.63, "f1_std": 100.06, "f2_mean": 1254.83, "f2_std": 341.12, "f3_mean": 2501.26, "f3_std": 403.66, "label": "/oʊ/ (boat)"},
+    "UW": {"f1_mean": 399.73, "f1_std": 137.20, "f2_mean": 1575.42, "f2_std": 400.67, "f3_mean": 2536.81, "f3_std": 365.52, "label": "/u/ (boot)"},
+    "AY": {"f1_mean": 799.82, "f1_std": 145.71, "f2_mean": 1446.65, "f2_std": 221.43, "f3_mean": 2405.79, "f3_std": 384.57, "label": "/aɪ/ (bite)"},
+    "OY": {"f1_mean": 539.50, "f1_std":  97.84, "f2_mean": 1216.14, "f2_std": 290.47, "f3_mean": 2464.83, "f3_std": 347.06, "label": "/ɔɪ/ (boy)"}
+  }
+}
