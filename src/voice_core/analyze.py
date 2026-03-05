@@ -529,8 +529,7 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
             f2_vals.append(f2)
         if not np.isnan(f3) and f3 > 0:
             f3_vals.append(f3)
-        if not np.isnan(f4) and f4 > 0:
-            f4_vals.append(f4)
+        f4_vals.append(f4 if not np.isnan(f4) and f4 > 0 else 0.0)
 
         if not np.isnan(bw1) and bw1 > 0:
             bw1_vals.append(bw1)
@@ -542,7 +541,8 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
     f1_mean = float(np.mean(f1_vals)) if f1_vals else 0.0
     f2_mean = float(np.mean(f2_vals)) if f2_vals else 0.0
     f3_mean = float(np.mean(f3_vals)) if f3_vals else 0.0
-    f4_mean = float(np.mean(f4_vals)) if f4_vals else 0.0
+    _f4_nonzero = [v for v in f4_vals if v > 0]
+    f4_mean = float(np.mean(_f4_nonzero)) if _f4_nonzero else 0.0
 
     bw1_mean = float(np.mean(bw1_vals)) if bw1_vals else 0.0
     bw2_mean = float(np.mean(bw2_vals)) if bw2_vals else 0.0
@@ -615,6 +615,9 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
     f2_zscore = gesture_zscores["f2_zscore"]
     f3_zscore = gesture_zscores["f3_zscore"]
 
+    # Intentionally use untrimmed lists for per-vowel computation: more frames
+    # improves vowel classification reliability; outlier clipping would discard
+    # valid frames from less-common vowels.
     per_vowel_zscores = _compute_per_vowel_zscores(g_f1, g_f2, g_f3, g_f4)
 
     # --- F0-formant interference detection ---
