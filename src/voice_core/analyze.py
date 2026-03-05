@@ -35,6 +35,33 @@ def _get_vowel_norms():
     return _VOWEL_NORMS
 
 
+# ──────────────────────────────────────────────────────────
+# Hillenbrand (1995) female speaker F1 norms for OPC detection
+# Source: Hillenbrand, Getty, Clark & Wheeler (1995) JASA 97(5):3099-3111
+# ──────────────────────────────────────────────────────────
+_HILLENBRAND_FEMALE_F1 = {
+    "ih": {"mean": 483, "std": 56},   # /ɪ/ (bit)
+    "uh": {"mean": 753, "std": 83},   # /ʌ/ (but)
+    "oo": {"mean": 459, "std": 78},   # /u/ (boot)
+    "ah": {"mean": 936, "std": 104},  # /ɑ/ (hot)
+    "ee": {"mean": 437, "std": 62},   # /i/ (beat)
+    "eh": {"mean": 731, "std": 82},   # /ɛ/ (bet)
+    "aw": {"mean": 781, "std": 98},   # /ɔ/ (caught)
+}
+
+# ARPABET (from _classify_vowel) → Hillenbrand lowercase label
+# Only the 7 OPC target vowels are mapped; others return None
+_ARPABET_TO_HILLENBRAND = {
+    "IH": "ih",
+    "AH": "uh",
+    "UW": "oo",
+    "AA": "ah",
+    "IY": "ee",
+    "EH": "eh",
+    "AO": "aw",
+}
+
+
 def _classify_vowel(f1: float, f2: float) -> str | None:
     """Classify a formant frame into the nearest vowel category.
 
@@ -115,6 +142,68 @@ def _compute_gesture_zscores(f1_vals: list, f2_vals: list, f3_vals: list) -> dic
         "n_vowel_frames": sum(vowel_counts.values()),
         "vowel_distribution": vowel_counts,
     }
+
+
+def _compute_per_vowel_zscores(
+    f1_vals: list, f2_vals: list, f3_vals: list, f4_vals: list
+) -> dict:
+    """Compute per-vowel F1 z-scores against Hillenbrand (1995) female norms.
+
+    For each frame, classifies the vowel from (F1, F2), then buckets F1 and F4
+    values by the detected vowel. Only the 7 OPC-relevant vowels are tracked
+    (ih, uh, oo, ah, ee, eh, aw).
+
+    Args:
+        f1_vals: Per-frame F1 frequencies (Hz). Frame-aligned with f2/f3/f4.
+        f2_vals: Per-frame F2 frequencies (Hz).
+        f3_vals: Per-frame F3 frequencies (Hz, unused but kept for signature consistency).
+        f4_vals: Per-frame F4 frequencies (Hz). 0 = unavailable for that frame.
+
+    Returns:
+        Dict keyed by Hillenbrand vowel label, e.g.:
+        {"ih": {"f1_zscore": 3.7, "f1_mean_hz": 849.0, "f4_mean_hz": 3200.0,
+                "n_frames": 15}, ...}
+        Only vowels with >= 1 classified frame are included.
+    """
+    n = min(len(f1_vals), len(f2_vals))
+    f4_len = len(f4_vals)
+
+    vowel_f1: dict[str, list] = {}
+    vowel_f4: dict[str, list] = {}
+
+    for i in range(n):
+        f1, f2 = f1_vals[i], f2_vals[i]
+        if f1 <= 0 or f2 <= 0:
+            continue
+
+        arpabet = _classify_vowel(f1, f2)
+        if arpabet is None:
+            continue
+
+        label = _ARPABET_TO_HILLENBRAND.get(arpabet)
+        if label is None:
+            continue  # Vowel not in the 7 target vowels
+
+        vowel_f1.setdefault(label, []).append(f1)
+
+        if i < f4_len and f4_vals[i] > 0:
+            vowel_f4.setdefault(label, []).append(f4_vals[i])
+
+    result = {}
+    for label, f1_list in vowel_f1.items():
+        f1_mean = float(np.mean(f1_list))
+        norms = _HILLENBRAND_FEMALE_F1[label]
+        z = (f1_mean - norms["mean"]) / norms["std"]
+        f4_mean = float(np.mean(vowel_f4[label])) if vowel_f4.get(label) else 0.0
+
+        result[label] = {
+            "f1_zscore": round(z, 3),
+            "f1_mean_hz": round(f1_mean, 1),
+            "f4_mean_hz": round(f4_mean, 1),
+            "n_frames": len(f1_list),
+        }
+
+    return result
 
 
 def _load_audio(wav_path: str) -> tuple[np.ndarray, int]:
@@ -491,20 +580,23 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
     if best_ceiling != 5000:
         gesture_formant = call(snd, "To Formant (burg)", 0.0, 5, 5000.0, 0.025, 50.0)
         g_n_frames = call(gesture_formant, "Get number of frames")
-        g_f1, g_f2, g_f3 = [], [], []
+        g_f1, g_f2, g_f3, g_f4 = [], [], [], []
         for i in range(1, g_n_frames + 1):
             t = call(gesture_formant, "Get time from frame number", i)
             gf1 = call(gesture_formant, "Get value at time", 1, t, "Hertz", "Linear")
             gf2 = call(gesture_formant, "Get value at time", 2, t, "Hertz", "Linear")
             gf3 = call(gesture_formant, "Get value at time", 3, t, "Hertz", "Linear")
+            gf4 = call(gesture_formant, "Get value at time", 4, t, "Hertz", "Linear")
             if not np.isnan(gf1) and gf1 > 0:
                 g_f1.append(gf1)
             if not np.isnan(gf2) and gf2 > 0:
                 g_f2.append(gf2)
             if not np.isnan(gf3) and gf3 > 0:
                 g_f3.append(gf3)
+            g_f4.append(gf4 if not np.isnan(gf4) and gf4 > 0 else 0.0)
     else:
         g_f1, g_f2, g_f3 = f1_vals, f2_vals, f3_vals
+        g_f4 = f4_vals
 
     # Trim outliers (5th/95th percentile) for cleaner gesture signals
     def _trim(vals):
@@ -522,6 +614,8 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
     f1_zscore = gesture_zscores["f1_zscore"]
     f2_zscore = gesture_zscores["f2_zscore"]
     f3_zscore = gesture_zscores["f3_zscore"]
+
+    per_vowel_zscores = _compute_per_vowel_zscores(g_f1, g_f2, g_f3, g_f4)
 
     # --- F0-formant interference detection ---
     f0_interference_flag = False
@@ -555,6 +649,7 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
         "f3_gesture_zscore": f3_zscore,   # Lip/brightness: positive = more feminine
         "gesture_vowel_frames": gesture_zscores["n_vowel_frames"],
         "gesture_vowel_distribution": gesture_zscores["vowel_distribution"],
+        "per_vowel_zscores": per_vowel_zscores,
         # Backward compat: old residual keys mapped from z-scores
         "f1_residual_hz": f1_zscore,
         "f2_residual_hz": f2_zscore,
