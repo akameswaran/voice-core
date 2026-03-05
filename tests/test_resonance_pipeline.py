@@ -2,12 +2,32 @@
 
 Tests the _compute_per_vowel_zscores function introduced in Task 1:
 per-vowel F1 z-scoring against Hillenbrand (1995) female speaker norms.
+
+Also tests BW4 extraction introduced in Task 2.
 """
 
 import math
+import numpy as np
+import parselmouth
 import pytest
 
-from voice_core.analyze import _compute_per_vowel_zscores
+from voice_core.analyze import _compute_per_vowel_zscores, analyze_formants
+
+
+def _make_test_sound(duration: float = 1.0, sr: int = 16000) -> parselmouth.Sound:
+    """Create a synthetic voiced signal suitable for formant analysis.
+
+    Uses a sum of harmonics to create a vowel-like signal with clear
+    formant structure that Praat can analyse reliably.
+    """
+    t = np.linspace(0, duration, int(sr * duration), endpoint=False)
+    # Fundamental + several harmonics to give Praat something to track
+    f0 = 150.0
+    signal = np.zeros_like(t)
+    for harmonic in range(1, 10):
+        signal += (1.0 / harmonic) * np.sin(2 * np.pi * f0 * harmonic * t)
+    signal = (signal / np.max(np.abs(signal))).astype(np.float32)
+    return parselmouth.Sound(signal, sampling_frequency=sr)
 
 
 class TestPerVowelZscores:
@@ -206,4 +226,44 @@ class TestPerVowelZscores:
         assert result["ih"]["n_frames"] == 2, (
             f"Zero-F1 frames should be skipped; expected n_frames=2, "
             f"got {result['ih']['n_frames']}"
+        )
+
+
+class TestBW4Extraction:
+    """Integration tests for BW4 extraction in analyze_formants (Task 2)."""
+
+    # ------------------------------------------------------------------
+    # Test 1: bw4_mean_hz key is present in analyze_formants output
+    # ------------------------------------------------------------------
+    def test_bw4_present_in_analyze_formants_output(self):
+        """analyze_formants should include a 'bw4_mean_hz' key in its result."""
+        snd = _make_test_sound()
+        result = analyze_formants(snd)
+        assert "bw4_mean_hz" in result, (
+            f"Expected 'bw4_mean_hz' key in result, got keys: {list(result.keys())}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 2: bw4_mean_hz is positive on a voiced signal
+    # ------------------------------------------------------------------
+    def test_bw4_is_positive(self):
+        """BW4 should be > 0 when Praat successfully tracks F4 on a voiced signal."""
+        snd = _make_test_sound()
+        result = analyze_formants(snd)
+        assert result["bw4_mean_hz"] > 0, (
+            f"Expected bw4_mean_hz > 0, got {result['bw4_mean_hz']}"
+        )
+
+    # ------------------------------------------------------------------
+    # Test 3: bw4_mean_hz is within a plausible acoustic range
+    # ------------------------------------------------------------------
+    def test_bw4_is_reasonable_range(self):
+        """BW4 should be within 0–5000 Hz (Praat bandwidths for voiced speech
+        are typically 50–500 Hz for well-resolved formants).
+        """
+        snd = _make_test_sound()
+        result = analyze_formants(snd)
+        bw4 = result["bw4_mean_hz"]
+        assert 0 < bw4 < 5000, (
+            f"Expected 0 < bw4_mean_hz < 5000 Hz, got {bw4}"
         )

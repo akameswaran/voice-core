@@ -509,7 +509,7 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
 
     n_frames = call(formant, "Get number of frames")
     f1_vals, f2_vals, f3_vals, f4_vals = [], [], [], []
-    bw1_vals, bw2_vals, bw3_vals = [], [], []
+    bw1_vals, bw2_vals, bw3_vals, bw4_vals = [], [], [], []
 
     for i in range(1, n_frames + 1):
         t = call(formant, "Get time from frame number", i)
@@ -522,6 +522,7 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
         bw1 = call(formant, "Get bandwidth at time", 1, t, "Hertz", "Linear")
         bw2 = call(formant, "Get bandwidth at time", 2, t, "Hertz", "Linear")
         bw3 = call(formant, "Get bandwidth at time", 3, t, "Hertz", "Linear")
+        bw4 = call(formant, "Get bandwidth at time", 4, t, "Hertz", "Linear")
 
         if not np.isnan(f1) and f1 > 0:
             f1_vals.append(f1)
@@ -537,6 +538,7 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
             bw2_vals.append(bw2)
         if not np.isnan(bw3) and bw3 > 0:
             bw3_vals.append(bw3)
+        bw4_vals.append(bw4 if not np.isnan(bw4) and bw4 > 0 else 0.0)
 
     f1_mean = float(np.mean(f1_vals)) if f1_vals else 0.0
     f2_mean = float(np.mean(f2_vals)) if f2_vals else 0.0
@@ -547,6 +549,8 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
     bw1_mean = float(np.mean(bw1_vals)) if bw1_vals else 0.0
     bw2_mean = float(np.mean(bw2_vals)) if bw2_vals else 0.0
     bw3_mean = float(np.mean(bw3_vals)) if bw3_vals else 0.0
+    _bw4_nonzero = [v for v in bw4_vals if v > 0]
+    bw4_mean = float(np.mean(_bw4_nonzero)) if _bw4_nonzero else 0.0
 
     # Formant spacing
     spacing_f2_f1 = f2_mean - f1_mean if f1_mean and f2_mean else 0.0
@@ -645,6 +649,7 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
         "bw1_mean_hz": bw1_mean,
         "bw2_mean_hz": bw2_mean,
         "bw3_mean_hz": bw3_mean,
+        "bw4_mean_hz": round(bw4_mean, 1),
         "formant_ceiling_used_hz": best_ceiling,
         "formant_ceiling_score": float(best_score),
         "f1_gesture_zscore": f1_zscore,   # OPC: positive = more feminine
