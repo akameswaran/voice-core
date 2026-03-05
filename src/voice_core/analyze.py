@@ -53,7 +53,7 @@ _HILLENBRAND_FEMALE_F1 = {
 # Only the 7 OPC target vowels are mapped; others return None
 _ARPABET_TO_HILLENBRAND = {
     "IH": "ih",
-    "AH": "uh",
+    "AH": "uh",  # maps both /ʌ/ (but) and /ə/ (schwa); schwa F1 ~500 Hz may slightly inflate uh z-scores
     "UW": "oo",
     "AA": "ah",
     "IY": "ee",
