@@ -166,9 +166,12 @@ def _compute_per_vowel_zscores(
         Only vowels with >= 1 classified frame are included.
     """
     n = min(len(f1_vals), len(f2_vals))
+    f3_len = len(f3_vals)
     f4_len = len(f4_vals)
 
     vowel_f1: dict[str, list] = {}
+    vowel_f2: dict[str, list] = {}
+    vowel_f3: dict[str, list] = {}
     vowel_f4: dict[str, list] = {}
 
     for i in range(n):
@@ -185,7 +188,10 @@ def _compute_per_vowel_zscores(
             continue  # Vowel not in the 7 target vowels
 
         vowel_f1.setdefault(label, []).append(f1)
+        vowel_f2.setdefault(label, []).append(f2)
 
+        if i < f3_len and f3_vals[i] > 0:
+            vowel_f3.setdefault(label, []).append(f3_vals[i])
         if i < f4_len and f4_vals[i] > 0:
             vowel_f4.setdefault(label, []).append(f4_vals[i])
 
@@ -194,14 +200,145 @@ def _compute_per_vowel_zscores(
         f1_mean = float(np.mean(f1_list))
         norms = _HILLENBRAND_FEMALE_F1[label]
         z = (f1_mean - norms["mean"]) / norms["std"]
+        f2_mean = float(np.mean(vowel_f2[label])) if vowel_f2.get(label) else 0.0
+        f3_mean = float(np.mean(vowel_f3[label])) if vowel_f3.get(label) else 0.0
         f4_mean = float(np.mean(vowel_f4[label])) if vowel_f4.get(label) else 0.0
 
-        result[label] = {
+        entry: dict = {
             "f1_zscore": round(z, 3),
             "f1_mean_hz": round(f1_mean, 1),
             "f4_mean_hz": round(f4_mean, 1),
             "n_frames": len(f1_list),
         }
+        # Per-vowel ΔF (requires at least 3 valid formants)
+        df = _compute_delta_f(f1_mean, f2_mean, f3_mean, f4_mean)
+        if df > 0:
+            entry["delta_f_hz"] = round(df, 1)
+
+        result[label] = entry
+
+    return result
+
+
+def _compute_per_vowel_source(
+    f1_vals: list, f2_vals: list,
+    h1_h2_per_frame: list[tuple[float, float, float]],
+    snd: parselmouth.Sound | None = None,
+    frame_step: float = 0.02,
+) -> dict:
+    """Bucket per-frame H1-H2, spectral tilt, and CPP by vowel identity.
+
+    Args:
+        f1_vals: Per-frame F1 frequencies (Hz) from formant extraction.
+        f2_vals: Per-frame F2 frequencies (Hz).
+        h1_h2_per_frame: List of (time_s, h1_h2_raw, h1_h2_corrected) from
+            _estimate_h1_h2(return_per_frame=True).
+        snd: Parselmouth Sound object for per-vowel tilt/CPP. Optional.
+        frame_step: Time step between formant frames (s). Default 0.02.
+
+    Returns:
+        Dict keyed by Hillenbrand vowel label:
+        {"ih": {"h1_h2_raw_db": 3.2, "h1_h2_corrected_db": 2.8,
+                "spectral_tilt_db_oct": -5.1, "cpp_db": 14.2,
+                "n_frames": 45}, ...}
+    """
+    if not h1_h2_per_frame or not f1_vals or not f2_vals:
+        return {}
+
+    # Build time→vowel_label lookup from formant frames
+    n_formant = min(len(f1_vals), len(f2_vals))
+    time_to_vowel: dict[int, str] = {}  # frame_index → vowel_label
+    for i in range(n_formant):
+        f1, f2 = f1_vals[i], f2_vals[i]
+        if f1 <= 0 or f2 <= 0:
+            continue
+        arpabet = _classify_vowel(f1, f2)
+        if arpabet is None:
+            continue
+        label = _ARPABET_TO_HILLENBRAND.get(arpabet)
+        if label is not None:
+            time_to_vowel[i] = label
+
+    # Bucket H1-H2 per-frame values by vowel
+    vowel_raw: dict[str, list] = {}
+    vowel_corrected: dict[str, list] = {}
+    vowel_times: dict[str, list] = {}  # frame times for tilt/CPP extraction
+
+    for t, raw, corrected in h1_h2_per_frame:
+        # Map H1-H2 frame time to nearest formant frame index
+        idx = int(round(t / frame_step))
+        label = time_to_vowel.get(idx)
+        if label is None:
+            continue
+        vowel_raw.setdefault(label, []).append(raw)
+        vowel_corrected.setdefault(label, []).append(corrected)
+        vowel_times.setdefault(label, []).append(t)
+
+    # Compute per-vowel spectral tilt and CPP if Sound is provided
+    vowel_tilt: dict[str, float] = {}
+    vowel_cpp: dict[str, float | None] = {}
+    if snd is not None:
+        sr = int(snd.sampling_frequency)
+        y = snd.values[0]
+        half_frame = int(frame_step * sr / 2)
+
+        for label, times in vowel_times.items():
+            # Per-vowel spectral tilt: extract frames, average power spectrum, fit
+            frames_audio = []
+            for t in times:
+                center = int(t * sr)
+                start = max(0, center - half_frame)
+                end = min(len(y), center + half_frame)
+                if end > start:
+                    frames_audio.append(y[start:end])
+
+            if frames_audio:
+                # Spectral tilt from averaged power spectrum
+                n_fft = 2048
+                avg_spectrum = np.zeros(n_fft // 2 + 1)
+                for chunk in frames_audio:
+                    if len(chunk) < n_fft:
+                        chunk = np.pad(chunk, (0, n_fft - len(chunk)))
+                    S = np.abs(np.fft.rfft(chunk[:n_fft] * np.hanning(min(len(chunk), n_fft)))) ** 2
+                    avg_spectrum[:len(S)] += S
+                avg_spectrum /= len(frames_audio)
+
+                freqs = np.fft.rfftfreq(n_fft, d=1.0 / sr)
+                mask = (freqs >= 100) & (freqs <= 5000) & (avg_spectrum > 0)
+                if np.sum(mask) >= 5:
+                    log_f = np.log2(freqs[mask])
+                    log_p = 10 * np.log10(avg_spectrum[mask] + 1e-20)
+                    coeffs = np.polyfit(log_f, log_p, 1)
+                    vowel_tilt[label] = round(float(coeffs[0]), 2)
+
+            # Per-vowel CPP: need >= 10 frames (200ms) for reliable cepstral analysis
+            if len(times) >= 10:
+                segments = []
+                for t in sorted(times):
+                    center = int(t * sr)
+                    start = max(0, center - half_frame)
+                    end = min(len(y), center + half_frame)
+                    if end > start:
+                        segments.append(y[start:end])
+                if segments:
+                    concat = np.concatenate(segments)
+                    temp_snd = parselmouth.Sound(concat, sampling_frequency=sr)
+                    vowel_cpp[label] = round(_estimate_cpp(temp_snd), 2)
+
+    result = {}
+    for label in vowel_raw:
+        raw_list = vowel_raw[label]
+        corr_list = vowel_corrected.get(label, [])
+        entry = {
+            "h1_h2_raw_db": round(float(np.mean(raw_list)), 2),
+            "h1_h2_corrected_db": round(float(np.mean(corr_list)), 2) if corr_list else 0.0,
+            "n_frames": len(raw_list),
+        }
+        if label in vowel_tilt:
+            entry["spectral_tilt_db_oct"] = vowel_tilt[label]
+        if label in vowel_cpp:
+            entry["cpp_db"] = vowel_cpp[label]
+        result[label] = entry
 
     return result
 
@@ -624,6 +761,9 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
     # valid frames from less-common vowels.
     per_vowel_zscores = _compute_per_vowel_zscores(g_f1, g_f2, g_f3, g_f4)
 
+    # --- Formant amplitude ratios ---
+    formant_amplitudes = _compute_formant_amplitudes(snd, formant, f0_mean_hz)
+
     # --- F0-formant interference detection ---
     f0_interference_flag = False
     f0_interference_severity = 0.0
@@ -658,6 +798,10 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
         "gesture_vowel_frames": gesture_zscores["n_vowel_frames"],
         "gesture_vowel_distribution": gesture_zscores["vowel_distribution"],
         "per_vowel_zscores": per_vowel_zscores,
+        "formant_amplitudes": {
+            k: v for k, v in formant_amplitudes.items() if k != "per_frame"
+        },
+        "formant_amplitude_per_frame": formant_amplitudes.get("per_frame", []),
         # Backward compat: old residual keys mapped from z-scores
         "f1_residual_hz": f1_zscore,
         "f2_residual_hz": f2_zscore,
@@ -665,6 +809,174 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
         "f0_interference": f0_interference_flag,
         "f0_interference_severity": f0_interference_severity,
     }
+
+
+# ──────────────────────────────────────────────────────────
+# Formant amplitude ratios (spectral energy at formant locations)
+# ──────────────────────────────────────────────────────────
+
+def _compute_formant_amplitudes(
+    snd: parselmouth.Sound,
+    formant_obj,
+    f0_mean_hz: float,
+) -> dict:
+    """Extract formant amplitudes and amplitude ratios from spectral peaks.
+
+    Measures the amplitude (dB) at each formant frequency (F1-F4) in the
+    spectrum for each frame. Returns session means and per-frame data.
+    Uses UNCORRECTED amplitudes (combined source+filter output).
+
+    Returns:
+        {
+            "a1_mean_db": float, "a2_mean_db": float,
+            "a3_mean_db": float, "a4_mean_db": float,
+            "a2_a1_db": float, "a4_a1_db": float, "a4_a2_db": float,
+            "f1_prominence_db": float,
+            "per_frame": [{"time_s", "f1_hz", "a1_db", ..., "a4_db", "f1_prom_db"}, ...],
+        }
+    """
+    duration = snd.get_total_duration()
+    n_frames = call(formant_obj, "Get number of frames")
+    frame_step = duration / max(1, n_frames)
+    half_win = max(0.025, 2.5 / max(f0_mean_hz, 75.0))  # ≥2.5 pitch periods
+
+    a1_vals, a2_vals, a3_vals, a4_vals = [], [], [], []
+    prom_vals = []
+    per_frame = []
+
+    for i in range(1, n_frames + 1):
+        t = call(formant_obj, "Get time from frame number", i)
+        f1 = call(formant_obj, "Get value at time", 1, t, "Hertz", "Linear")
+        f2 = call(formant_obj, "Get value at time", 2, t, "Hertz", "Linear")
+        f3 = call(formant_obj, "Get value at time", 3, t, "Hertz", "Linear")
+        f4 = call(formant_obj, "Get value at time", 4, t, "Hertz", "Linear")
+
+        if np.isnan(f1) or f1 <= 0 or np.isnan(f2) or f2 <= 0:
+            continue
+
+        # Extract short segment and compute spectrum
+        start_t = max(0, t - half_win)
+        end_t = min(duration, t + half_win)
+        segment = snd.extract_part(start_t, end_t,
+                                   parselmouth.WindowShape.HAMMING, 1.0, False)
+        spectrum = segment.to_spectrum()
+
+        # Measure amplitude at each formant frequency (band energy in narrow window)
+        def _amp_at(freq):
+            if np.isnan(freq) or freq <= 0:
+                return None
+            bw = max(50.0, freq * 0.05)  # ±5% of formant freq, min 50 Hz
+            energy = call(spectrum, "Get band energy", freq - bw, freq + bw)
+            return 10 * np.log10(max(energy, 1e-20))
+
+        a1 = _amp_at(f1)
+        a2 = _amp_at(f2)
+        a3 = _amp_at(f3)
+        a4 = _amp_at(f4)
+
+        if a1 is None or a2 is None:
+            continue
+
+        a1_vals.append(a1)
+        a2_vals.append(a2)
+        if a3 is not None:
+            a3_vals.append(a3)
+        if a4 is not None:
+            a4_vals.append(a4)
+
+        # F1 prominence: amplitude at F1 minus minimum between F1 and F2
+        mid_freq = (f1 + f2) / 2.0
+        n_steps = 5
+        min_amp = a1
+        for step in range(1, n_steps + 1):
+            probe = f1 + (mid_freq - f1) * step / n_steps
+            probe_amp = _amp_at(probe)
+            if probe_amp is not None and probe_amp < min_amp:
+                min_amp = probe_amp
+        f1_prom = a1 - min_amp
+
+        prom_vals.append(f1_prom)
+
+        frame_data = {
+            "time_s": round(float(t), 4),
+            "f1_hz": round(float(f1), 1), "a1_db": round(a1, 2),
+            "f2_hz": round(float(f2), 1), "a2_db": round(a2, 2),
+        }
+        if a3 is not None:
+            frame_data["f3_hz"] = round(float(f3), 1)
+            frame_data["a3_db"] = round(a3, 2)
+        if a4 is not None:
+            frame_data["f4_hz"] = round(float(f4), 1)
+            frame_data["a4_db"] = round(a4, 2)
+        frame_data["f1_prom_db"] = round(f1_prom, 2)
+        per_frame.append(frame_data)
+
+    a1_m = float(np.mean(a1_vals)) if a1_vals else 0.0
+    a2_m = float(np.mean(a2_vals)) if a2_vals else 0.0
+    a3_m = float(np.mean(a3_vals)) if a3_vals else 0.0
+    a4_m = float(np.mean(a4_vals)) if a4_vals else 0.0
+
+    return {
+        "a1_mean_db": round(a1_m, 2),
+        "a2_mean_db": round(a2_m, 2),
+        "a3_mean_db": round(a3_m, 2),
+        "a4_mean_db": round(a4_m, 2),
+        "a2_a1_db": round(a2_m - a1_m, 2) if a1_vals and a2_vals else 0.0,
+        "a4_a1_db": round(a4_m - a1_m, 2) if a1_vals and a4_vals else 0.0,
+        "a4_a2_db": round(a4_m - a2_m, 2) if a2_vals and a4_vals else 0.0,
+        "f1_prominence_db": round(float(np.mean(prom_vals)), 2) if prom_vals else 0.0,
+        "per_frame": per_frame,
+    }
+
+
+def _compute_per_vowel_amplitudes(
+    f1_vals: list, f2_vals: list,
+    amplitude_per_frame: list[dict],
+    frame_step: float = 0.02,
+) -> dict:
+    """Bucket per-frame formant amplitudes by vowel identity.
+
+    Same pattern as _compute_per_vowel_source(): classify each frame by F1/F2,
+    bucket amplitude data, compute per-vowel means.
+
+    Returns:
+        {"ih": {"a2_a1_db": float, "a4_a1_db": float,
+                "f1_prominence_db": float, "n_frames": int}, ...}
+    """
+    n = min(len(f1_vals), len(f2_vals), len(amplitude_per_frame))
+    buckets: dict[str, list] = {}
+
+    for i in range(n):
+        f1, f2 = f1_vals[i], f2_vals[i]
+        if f1 <= 0 or f2 <= 0:
+            continue
+        arpabet = _classify_vowel(f1, f2)
+        if arpabet is None:
+            continue
+        label = _ARPABET_TO_HILLENBRAND.get(arpabet)
+        if label is None:
+            continue
+        buckets.setdefault(label, []).append(amplitude_per_frame[i])
+
+    result = {}
+    for label, frames in buckets.items():
+        a1s = [f["a1_db"] for f in frames if "a1_db" in f]
+        a2s = [f["a2_db"] for f in frames if "a2_db" in f]
+        a4s = [f.get("a4_db") for f in frames if f.get("a4_db") is not None]
+        proms = [f["f1_prom_db"] for f in frames if "f1_prom_db" in f]
+
+        a1_m = float(np.mean(a1s)) if a1s else 0.0
+        a2_m = float(np.mean(a2s)) if a2s else 0.0
+        a4_m = float(np.mean(a4s)) if a4s else 0.0
+
+        result[label] = {
+            "a2_a1_db": round(a2_m - a1_m, 2) if a1s and a2s else 0.0,
+            "a4_a1_db": round(a4_m - a1_m, 2) if a1s and a4s else 0.0,
+            "f1_prominence_db": round(float(np.mean(proms)), 2) if proms else 0.0,
+            "n_frames": len(frames),
+        }
+
+    return result
 
 
 def _iseli_correction(f_hz: float, formant_freqs: list, formant_bws: list) -> float:
@@ -698,7 +1010,10 @@ def _iseli_correction(f_hz: float, formant_freqs: list, formant_bws: list) -> fl
 
 def analyze_voice_quality(snd: parselmouth.Sound, f3_mean_hz: float = 0.0,
                           formant_freqs: list | None = None,
-                          formant_bws: list | None = None) -> dict:
+                          formant_bws: list | None = None,
+                          f1_values: list | None = None,
+                          f2_values: list | None = None,
+                          formant_amplitude_per_frame: list | None = None) -> dict:
     """Analyze voice quality: HNR, H1-H2, jitter, shimmer, CPP, spectral tilt, CQ, H1-A3.
 
     Args:
@@ -706,6 +1021,9 @@ def analyze_voice_quality(snd: parselmouth.Sound, f3_mean_hz: float = 0.0,
         f3_mean_hz: Mean F3 frequency from formant analysis (needed for H1-A3).
         formant_freqs: List of formant center frequencies [F1, F2, F3] for Iseli correction.
         formant_bws: List of formant bandwidths [BW1, BW2, BW3] for Iseli correction.
+        f1_values: Per-frame F1 values for per-vowel source bucketing.
+        f2_values: Per-frame F2 values for per-vowel source bucketing.
+        formant_amplitude_per_frame: Per-frame formant amplitudes for per-vowel bucketing.
     """
     # Point process for jitter/shimmer
     pitch_obj = call(snd, "To Pitch", 0.0, 75.0, 600.0)
@@ -722,13 +1040,44 @@ def analyze_voice_quality(snd: parselmouth.Sound, f3_mean_hz: float = 0.0,
     shimmer = call([snd, point_process], "Get shimmer (local)", 0, 0, 0.0001, 0.02, 1.3, 1.6)
 
     # H1-H2: difference between first and second harmonic amplitudes
-    # Estimate from spectrum at voiced frames
-    h1_h2_raw, h1_h2_corrected = _estimate_h1_h2(
-        snd, pitch_obj, formant_freqs=formant_freqs, formant_bws=formant_bws
+    # Request per-frame data when we have formant values for vowel bucketing
+    want_per_frame = f1_values is not None and f2_values is not None
+    h1_h2_result = _estimate_h1_h2(
+        snd, pitch_obj, formant_freqs=formant_freqs, formant_bws=formant_bws,
+        return_per_frame=want_per_frame,
     )
+    if want_per_frame:
+        h1_h2_raw, h1_h2_corrected, h1_h2_per_frame = h1_h2_result
+    else:
+        h1_h2_raw, h1_h2_corrected = h1_h2_result
+        h1_h2_per_frame = []
 
-    # CPP: Cepstral Peak Prominence
-    cpp = _estimate_cpp(snd)
+    # Per-vowel source measures (H1-H2, tilt, CPP bucketed by vowel identity)
+    per_vowel_source = {}
+    if want_per_frame and h1_h2_per_frame:
+        per_vowel_source = _compute_per_vowel_source(
+            f1_values, f2_values, h1_h2_per_frame, snd=snd,
+        )
+
+    # Per-vowel amplitude ratios (formant energy distribution per vowel)
+    per_vowel_amplitudes = {}
+    if want_per_frame and formant_amplitude_per_frame:
+        per_vowel_amplitudes = _compute_per_vowel_amplitudes(
+            f1_values, f2_values, formant_amplitude_per_frame,
+        )
+
+    # Vocal fry detection
+    fry_data = _detect_vocal_fry(snd, pitch_obj)
+    fry_proportion = fry_data["fry_proportion"]
+    fry_times = fry_data["fry_frame_times"]
+
+    # CPP: Cepstral Peak Prominence (raw = all frames, clean = fry excluded)
+    cpp_raw = _estimate_cpp(snd)
+    cpp_clean = _cpp_excluding_frames(snd, fry_times) if fry_times else cpp_raw
+
+    # HNR: raw = all frames, clean = fry excluded
+    hnr_raw = float(hnr) if not np.isnan(hnr) else 0.0
+    hnr_clean = _hnr_excluding_frames(snd, fry_times) if fry_times else hnr_raw
 
     # Spectral tilt via librosa
     spectral_tilt = _estimate_spectral_tilt(snd)
@@ -742,32 +1091,48 @@ def analyze_voice_quality(snd: parselmouth.Sound, f3_mean_hz: float = 0.0,
     # CQ: closed quotient estimate from harmonic relationships
     cq = _estimate_closed_quotient(snd, pitch_obj)
 
-    return {
-        "hnr_db": float(hnr) if not np.isnan(hnr) else 0.0,
+    # Use fry-excluded values as primary when fry is present
+    result = {
+        "hnr_db": hnr_clean,
+        "hnr_db_raw": hnr_raw,
         "h1_h2_db": h1_h2_raw,
         "h1_h2_db_corrected": h1_h2_corrected,
-        "cpp_db": cpp,
+        "cpp_db": cpp_clean,
+        "cpp_db_raw": cpp_raw,
         "jitter_local": float(jitter * 100) if not np.isnan(jitter) else 0.0,  # as percent
         "shimmer_local": float(shimmer * 100) if not np.isnan(shimmer) else 0.0,  # as percent
         "spectral_tilt_db_per_octave": spectral_tilt,
         "h1_a3_db": h1_a3_raw,
         "h1_a3_db_corrected": h1_a3_corrected,
         "closed_quotient": cq,
+        "fry_proportion": round(fry_proportion, 3),
     }
+    if per_vowel_source:
+        result["per_vowel_source"] = per_vowel_source
+    if per_vowel_amplitudes:
+        result["per_vowel_amplitudes"] = per_vowel_amplitudes
+    return result
 
 
 def _estimate_h1_h2(snd: parselmouth.Sound, pitch_obj,
                     formant_freqs: list | None = None,
-                    formant_bws: list | None = None) -> tuple[float, float]:
+                    formant_bws: list | None = None,
+                    return_per_frame: bool = False):
     """Estimate H1-H2 (breathiness) from harmonic amplitudes.
+
+    Args:
+        return_per_frame: If True, return a 3-tuple with per-frame lists appended.
 
     Returns:
         (raw_mean, corrected_mean) — if no formant data, corrected_mean = raw_mean.
+        If return_per_frame: (raw_mean, corrected_mean, per_frame_list)
+            where per_frame_list = [(time_s, h1_h2_raw, h1_h2_corrected), ...]
     """
     duration = snd.get_total_duration()
     n_frames = max(1, int(duration / 0.02))
     h1_h2_raw_vals = []
     h1_h2_corrected_vals = []
+    per_frame = []
     has_formants = formant_freqs is not None and formant_bws is not None
 
     for i in range(n_frames):
@@ -789,18 +1154,27 @@ def _estimate_h1_h2(snd: parselmouth.Sound, pitch_obj,
         if h1_amp > 0 and h2_amp > 0:
             h1_db = 10 * np.log10(h1_amp)
             h2_db = 10 * np.log10(h2_amp)
-            h1_h2_raw_vals.append(h1_db - h2_db)
+            raw_val = h1_db - h2_db
+            h1_h2_raw_vals.append(raw_val)
 
+            corrected_val = raw_val
             if has_formants:
                 h1_corrected = h1_db - _iseli_correction(f0, formant_freqs, formant_bws)
                 h2_corrected = h2_db - _iseli_correction(2 * f0, formant_freqs, formant_bws)
-                h1_h2_corrected_vals.append(h1_corrected - h2_corrected)
+                corrected_val = h1_corrected - h2_corrected
+                h1_h2_corrected_vals.append(corrected_val)
+
+            if return_per_frame:
+                per_frame.append((t, raw_val, corrected_val))
 
     raw_mean = float(np.mean(h1_h2_raw_vals)) if h1_h2_raw_vals else 0.0
     if has_formants and h1_h2_corrected_vals:
         corrected_mean = float(np.mean(h1_h2_corrected_vals))
     else:
         corrected_mean = raw_mean
+
+    if return_per_frame:
+        return (raw_mean, corrected_mean, per_frame)
     return (raw_mean, corrected_mean)
 
 
@@ -903,6 +1277,151 @@ def _estimate_closed_quotient(snd: parselmouth.Sound, pitch_obj) -> float:
             cq_vals.append(float(np.clip(cq, 0.2, 0.8)))
 
     return float(np.mean(cq_vals)) if cq_vals else 0.0
+
+
+# ──────────────────────────────────────────────────────────
+# Vocal fry (creaky voice) detection
+# ──────────────────────────────────────────────────────────
+
+def _detect_vocal_fry(snd: parselmouth.Sound, pitch_obj,
+                      f0_threshold: float = 80.0,
+                      jitter_threshold: float = 0.05,
+                      min_consecutive: int = 3,
+                      frame_step: float = 0.01) -> dict:
+    """Detect vocal fry frames using F0 < threshold AND high local jitter.
+
+    A frame is fry if: F0 < f0_threshold Hz AND local jitter > jitter_threshold.
+    Only segments of >= min_consecutive frames (>= 30ms at 10ms step) count.
+
+    Returns:
+        {
+            "fry_mask": list[bool] — per-frame fry flags,
+            "fry_proportion": float — fraction of voiced frames that are fry,
+            "fry_frame_times": list[float] — center times of fry frames,
+            "n_fry_frames": int,
+            "n_voiced_frames": int,
+        }
+    """
+    duration = snd.get_total_duration()
+    n_frames = max(1, int(duration / frame_step))
+
+    # Get per-frame F0
+    f0_per_frame = []
+    for i in range(n_frames):
+        t = (i + 0.5) * frame_step
+        f0 = call(pitch_obj, "Get value at time", t, "Hertz", "Linear")
+        f0_per_frame.append(float(f0) if not np.isnan(f0) else 0.0)
+
+    # Get per-frame local jitter via point process period differences
+    point_process = call(snd, "To PointProcess (periodic, cc)", 50.0, 600.0)
+    n_periods = call(point_process, "Get number of periods", 0, 0, 0.0001, 0.04, 1.3)
+
+    # Build period array for jitter calculation
+    periods = []
+    for i in range(1, int(n_periods) + 1):
+        t_start = call(point_process, "Get time from index", i)
+        t_end = call(point_process, "Get time from index", i + 1)
+        if t_end > 0:
+            periods.append((float(t_start), float(t_end - t_start)))
+
+    # Compute local jitter per frame: ratio of period perturbation to local mean
+    # Map periods to frames via time
+    jitter_per_frame = [0.0] * n_frames
+    for idx in range(1, len(periods) - 1):
+        t_center, p_center = periods[idx]
+        _, p_prev = periods[idx - 1]
+        _, p_next = periods[idx + 1]
+        local_mean = (p_prev + p_center + p_next) / 3.0
+        if local_mean > 0:
+            local_jitter = abs(p_center - p_prev) / local_mean
+            frame_idx = min(n_frames - 1, int(t_center / frame_step))
+            # Take max jitter if multiple periods map to same frame
+            jitter_per_frame[frame_idx] = max(jitter_per_frame[frame_idx], local_jitter)
+
+    # Mark candidate fry frames: low F0 AND high jitter
+    candidates = []
+    for i in range(n_frames):
+        f0 = f0_per_frame[i]
+        is_low_f0 = 0 < f0 < f0_threshold
+        is_high_jitter = jitter_per_frame[i] > jitter_threshold
+        candidates.append(is_low_f0 and is_high_jitter)
+
+    # Filter: only keep runs of >= min_consecutive frames
+    fry_mask = [False] * n_frames
+    run_start = None
+    for i in range(n_frames + 1):
+        if i < n_frames and candidates[i]:
+            if run_start is None:
+                run_start = i
+        else:
+            if run_start is not None:
+                run_len = i - run_start
+                if run_len >= min_consecutive:
+                    for j in range(run_start, i):
+                        fry_mask[j] = True
+                run_start = None
+
+    fry_frame_times = [
+        (i + 0.5) * frame_step for i in range(n_frames) if fry_mask[i]
+    ]
+    n_voiced = sum(1 for f0 in f0_per_frame if f0 > 0)
+    n_fry = sum(fry_mask)
+
+    return {
+        "fry_mask": fry_mask,
+        "fry_proportion": float(n_fry / n_voiced) if n_voiced > 0 else 0.0,
+        "fry_frame_times": fry_frame_times,
+        "n_fry_frames": n_fry,
+        "n_voiced_frames": n_voiced,
+    }
+
+
+def _hnr_excluding_frames(snd: parselmouth.Sound,
+                           exclude_times: list[float],
+                           frame_step: float = 0.01) -> float:
+    """Compute HNR excluding specific time frames (e.g., fry frames).
+
+    Extracts per-frame harmonicity values from Praat's Harmonicity object
+    and averages only the non-excluded frames.
+    """
+    harmonicity = call(snd, "To Harmonicity (cc)", 0.01, 75.0, 0.1, 1.0)
+    n_frames = call(harmonicity, "Get number of frames")
+    # Quantize exclude times to frame indices for O(1) lookup
+    exclude_indices = set(round(t / frame_step) for t in exclude_times)
+
+    vals = []
+    for i in range(1, int(n_frames) + 1):
+        t = call(harmonicity, "Get time from frame number", i)
+        frame_idx = round(float(t) / frame_step)
+        if frame_idx in exclude_indices:
+            continue
+        val = call(harmonicity, "Get value in frame", i)
+        if not np.isnan(val) and val > -200:  # Praat uses -200 for silence
+            vals.append(float(val))
+
+    return float(np.mean(vals)) if vals else 0.0
+
+
+def _cpp_excluding_frames(snd: parselmouth.Sound,
+                           exclude_times: list[float],
+                           frame_step: float = 0.01) -> float:
+    """Compute CPP excluding fry frames by zeroing them in the signal."""
+    if not exclude_times:
+        return _estimate_cpp(snd)
+
+    # Zero out fry regions in a copy of the signal
+    y = snd.values[0].copy()
+    sr = int(snd.sampling_frequency)
+    half_frame = int(frame_step * sr / 2)
+
+    for t in exclude_times:
+        center = int(t * sr)
+        start = max(0, center - half_frame)
+        end = min(len(y), center + half_frame)
+        y[start:end] = 0.0
+
+    clean_snd = parselmouth.Sound(y, sampling_frequency=sr)
+    return _estimate_cpp(clean_snd)
 
 
 def _estimate_cpp(snd: parselmouth.Sound) -> float:
@@ -1163,7 +1682,13 @@ def analyze(wav_path: str, output_path: str | None = None, crepe_device: str = "
     print("  Analyzing voice quality...")
     formant_freqs = [formant_data.get("f1_mean_hz", 0), formant_data.get("f2_mean_hz", 0), formant_data.get("f3_mean_hz", 0)]
     formant_bws = [formant_data.get("bw1_mean_hz", 0), formant_data.get("bw2_mean_hz", 0), formant_data.get("bw3_mean_hz", 0)]
-    quality_data = analyze_voice_quality(snd, f3_mean_hz=formant_data.get("f3_mean_hz", 0.0), formant_freqs=formant_freqs, formant_bws=formant_bws)
+    quality_data = analyze_voice_quality(
+        snd, f3_mean_hz=formant_data.get("f3_mean_hz", 0.0),
+        formant_freqs=formant_freqs, formant_bws=formant_bws,
+        f1_values=formant_data.get("f1_values"),
+        f2_values=formant_data.get("f2_values"),
+        formant_amplitude_per_frame=formant_data.get("formant_amplitude_per_frame"),
+    )
 
     # 4. Articulation
     print("  Analyzing articulation...")
@@ -1212,6 +1737,12 @@ def _strip_contours(result: dict) -> dict:
         out["pitch"].pop("f0_contour_time_s", None)
         out["pitch"].pop("f0_confidence", None)
         out["pitch"]["contour_frames"] = contour_len
+
+    # Strip large per-frame arrays from formants
+    if "formants" in out:
+        out["formants"].pop("f1_values", None)
+        out["formants"].pop("f2_values", None)
+        out["formants"].pop("formant_amplitude_per_frame", None)
 
     return out
 

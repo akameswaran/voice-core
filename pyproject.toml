@@ -24,3 +24,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/voice_core"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
