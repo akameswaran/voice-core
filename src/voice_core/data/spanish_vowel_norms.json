@@ -1,0 +1,12 @@
+{
+  "_description": "Spanish 5-vowel system formant norms. Mixed-gender averages from Quilis (1981) and Martínez Celdrán (2003). Used for vowel classification and purity scoring in Spanish pronunciation analysis.",
+  "_source": "Quilis, A. (1981) Fonética acústica de la lengua española; Martínez Celdrán, E. (2003) JIPA 33(2)",
+
+  "vowels": {
+    "A": {"f1_mean": 750.0, "f1_std": 120.0, "f2_mean": 1250.0, "f2_std": 150.0, "f3_mean": 2550.0, "f3_std": 300.0, "label": "/a/ (casa)"},
+    "E": {"f1_mean": 450.0, "f1_std":  80.0, "f2_mean": 1900.0, "f2_std": 200.0, "f3_mean": 2600.0, "f3_std": 280.0, "label": "/e/ (mesa)"},
+    "I": {"f1_mean": 300.0, "f1_std":  70.0, "f2_mean": 2300.0, "f2_std": 250.0, "f3_mean": 2900.0, "f3_std": 300.0, "label": "/i/ (sí)"},
+    "O": {"f1_mean": 500.0, "f1_std":  90.0, "f2_mean":  900.0, "f2_std": 150.0, "f3_mean": 2550.0, "f3_std": 300.0, "label": "/o/ (todo)"},
+    "U": {"f1_mean": 350.0, "f1_std":  80.0, "f2_mean":  850.0, "f2_std": 150.0, "f3_mean": 2400.0, "f3_std": 300.0, "label": "/u/ (tú)"}
+  }
+}
