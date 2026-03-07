@@ -128,3 +128,122 @@ def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
         "f1_drift_hz": round(f1_drift, 1),
         "f2_drift_hz": round(f2_drift, 1),
     }
+
+
+def analyze_spanish_words(
+    y: np.ndarray,
+    sr: int,
+    word_timestamps: list[dict],
+    target_sounds: list[dict],
+) -> dict:
+    """Analyze Spanish pronunciation using Whisper word boundaries.
+
+    Fast mode (~100-200ms) that uses word-level timestamps from Whisper
+    to locate target sounds and run spectral analysis. No MFA required.
+
+    Args:
+        y: Full audio array (float32, mono).
+        sr: Sample rate.
+        word_timestamps: List of {"word": str, "start": float, "end": float}
+            from Whisper's word_timestamps output.
+        target_sounds: List of {"word": str, "feature": str} where feature
+            is "sheismo", "tap_r", or "vowel_purity".
+
+    Returns:
+        Dict with:
+            consonant_features: list of per-target classification results
+            vowel_scores: list of per-vowel purity results
+            summary: {sheismo_score, tap_r_score, vowel_purity_avg}
+    """
+    from voice_core.spanish_consonants import classify_sheismo, classify_tap_r
+
+    # Build word→timestamp lookup
+    ts_lookup: dict[str, dict] = {}
+    for wt in word_timestamps:
+        ts_lookup[wt["word"].lower().strip()] = wt
+
+    consonant_features = []
+    vowel_scores = []
+
+    for target in target_sounds:
+        word = target["word"].lower().strip()
+        feature = target["feature"]
+        ts = ts_lookup.get(word)
+
+        if ts is None:
+            consonant_features.append({
+                "word": word, "feature": feature,
+                "classification": "not_found", "confidence": 0.0,
+            })
+            continue
+
+        # Extract audio segment
+        start_sample = int(ts["start"] * sr)
+        end_sample = int(ts["end"] * sr)
+        segment = y[start_sample:end_sample]
+
+        if len(segment) < int(0.03 * sr):
+            consonant_features.append({
+                "word": word, "feature": feature,
+                "classification": "too_short", "confidence": 0.0,
+            })
+            continue
+
+        if feature == "sheismo":
+            result = classify_sheismo(segment, sr)
+            result["word"] = word
+            result["feature"] = feature
+            consonant_features.append(result)
+
+        elif feature == "tap_r":
+            result = classify_tap_r(segment, sr)
+            result["word"] = word
+            result["feature"] = feature
+            consonant_features.append(result)
+
+        elif feature == "vowel_purity":
+            vowel = target.get("vowel", "").upper()
+            try:
+                import parselmouth
+                from parselmouth import praat
+                snd = parselmouth.Sound(segment, sampling_frequency=sr)
+                formant = praat.call(snd, "To Formant (burg)", 0.0, 5, 5500, 0.025, 50.0)
+                n_frames = praat.call(formant, "Get number of frames")
+                f1_frames = []
+                f2_frames = []
+                for fi in range(1, n_frames + 1):
+                    t = praat.call(formant, "Get time from frame number", fi)
+                    f1 = praat.call(formant, "Get value at time", 1, t, "Hertz", "Linear")
+                    f2 = praat.call(formant, "Get value at time", 2, t, "Hertz", "Linear")
+                    if f1 > 0 and f2 > 0:
+                        f1_frames.append(f1)
+                        f2_frames.append(f2)
+
+                if f1_frames and vowel:
+                    purity_result = score_vowel_purity(
+                        np.array(f1_frames), np.array(f2_frames), vowel)
+                    if purity_result:
+                        purity_result["word"] = word
+                        purity_result["vowel"] = vowel
+                        vowel_scores.append(purity_result)
+            except Exception:
+                pass
+
+    # Summary
+    sheismo_scores = [c["confidence"] for c in consonant_features
+                      if c.get("feature") == "sheismo" and c.get("classification") == "sheismo"]
+    tap_scores = [c["confidence"] for c in consonant_features
+                  if c.get("feature") == "tap_r" and c.get("classification") == "tap"]
+    purity_vals = [v["purity"] for v in vowel_scores]
+
+    summary = {
+        "sheismo_score": round(float(np.mean(sheismo_scores)), 3) if sheismo_scores else None,
+        "tap_r_score": round(float(np.mean(tap_scores)), 3) if tap_scores else None,
+        "vowel_purity_avg": round(float(np.mean(purity_vals)), 3) if purity_vals else None,
+    }
+
+    return {
+        "consonant_features": consonant_features,
+        "vowel_scores": vowel_scores,
+        "summary": summary,
+    }

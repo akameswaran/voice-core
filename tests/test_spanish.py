@@ -90,3 +90,35 @@ def test_spanish_ipa_consonant_targets():
     assert "ʒ" in SPANISH_CONSONANT_TARGETS
     assert "ɾ" in SPANISH_CONSONANT_TARGETS
     assert "j" in SPANISH_CONSONANT_TARGETS
+
+
+def test_analyze_spanish_words_returns_structure():
+    """Should return vowel purity and consonant scores."""
+    from voice_core.spanish import analyze_spanish_words
+    sr = 16000
+    # Create 1 second of noise (we're testing structure, not real audio)
+    y = np.random.default_rng(42).normal(0, 0.1, sr).astype(np.float32)
+
+    word_timestamps = [
+        {"word": "calle", "start": 0.0, "end": 0.3},
+        {"word": "pero", "start": 0.4, "end": 0.7},
+    ]
+    target_sounds = [
+        {"word": "calle", "feature": "sheismo"},
+        {"word": "pero", "feature": "tap_r"},
+    ]
+
+    result = analyze_spanish_words(y, sr, word_timestamps, target_sounds)
+    assert "consonant_features" in result
+    assert "summary" in result
+    assert len(result["consonant_features"]) == 2
+
+
+def test_analyze_spanish_words_empty_targets():
+    """No targets should return empty results."""
+    from voice_core.spanish import analyze_spanish_words
+    sr = 16000
+    y = np.zeros(sr, dtype=np.float32)
+    result = analyze_spanish_words(y, sr, [], [])
+    assert result["consonant_features"] == []
+    assert result["vowel_scores"] == []
