@@ -46,3 +46,45 @@ def test_classify_sheismo_short_segment():
     y = np.zeros(int(0.01 * sr), dtype=np.float32)
     result = classify_sheismo(y, sr)
     assert result["classification"] == "unknown"
+
+
+def _make_tap_r(sr: int) -> np.ndarray:
+    """Simulate a tap-r: vowel + brief silence + vowel."""
+    vowel1 = _make_tone(0.04, sr, 500.0) * 0.3
+    closure = np.zeros(int(0.025 * sr), dtype=np.float32)  # 25ms closure
+    vowel2 = _make_tone(0.04, sr, 500.0) * 0.3
+    return np.concatenate([vowel1, closure, vowel2])
+
+
+def _make_english_r(sr: int) -> np.ndarray:
+    """Simulate English approximant /ɹ/: continuous low-frequency sound."""
+    return _make_tone(0.10, sr, 350.0)
+
+
+def test_detect_tap_r():
+    """Tap-r (brief closure) should be detected."""
+    from voice_core.spanish_consonants import classify_tap_r
+    sr = 16000
+    y = _make_tap_r(sr)
+    result = classify_tap_r(y, sr)
+    assert result["classification"] == "tap"
+    assert result["has_closure"] is True
+
+
+def test_detect_english_r():
+    """English approximant (no closure) should be detected."""
+    from voice_core.spanish_consonants import classify_tap_r
+    sr = 16000
+    y = _make_english_r(sr)
+    result = classify_tap_r(y, sr)
+    assert result["classification"] == "approximant"
+    assert result["has_closure"] is False
+
+
+def test_tap_r_short_segment():
+    """Too-short segment returns unknown."""
+    from voice_core.spanish_consonants import classify_tap_r
+    sr = 16000
+    y = np.zeros(int(0.01 * sr), dtype=np.float32)
+    result = classify_tap_r(y, sr)
+    assert result["classification"] == "unknown"

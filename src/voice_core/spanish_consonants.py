@@ -70,3 +70,83 @@ def classify_sheismo(y: np.ndarray, sr: int,
         "spectral_centroid_hz": round(centroid_hz, 1),
         "high_freq_ratio": round(high_freq_ratio, 3),
     }
+
+
+def classify_tap_r(y: np.ndarray, sr: int,
+                   min_duration: float = 0.03,
+                   closure_max_ms: float = 40.0,
+                   closure_threshold_db: float = -20.0) -> dict:
+    """Classify an r-position segment as tap /ɾ/ or approximant /ɹ/.
+
+    Spanish tap-r has a brief (~20-30ms) amplitude dip from tongue closure.
+    English approximant-r has continuous sound with no closure.
+
+    Args:
+        y: Audio segment containing the r production.
+        sr: Sample rate.
+        min_duration: Minimum segment duration in seconds.
+        closure_max_ms: Maximum closure duration to count as tap (ms).
+        closure_threshold_db: dB threshold below peak for closure detection.
+
+    Returns:
+        Dict with {classification: "tap"|"approximant"|"unknown",
+                    has_closure: bool, closure_duration_ms: float,
+                    confidence: float}
+    """
+    if len(y) / sr < min_duration:
+        return {"classification": "unknown", "has_closure": False,
+                "closure_duration_ms": 0.0, "confidence": 0.0}
+
+    # Compute amplitude envelope (RMS in short windows)
+    frame_length = int(0.005 * sr)  # 5ms frames
+    hop = frame_length // 2
+    rms = librosa.feature.rms(y=y, frame_length=frame_length, hop_length=hop)[0]
+
+    if len(rms) < 3:
+        return {"classification": "unknown", "has_closure": False,
+                "closure_duration_ms": 0.0, "confidence": 0.0}
+
+    # Convert to dB
+    rms_db = 20 * np.log10(rms + 1e-10)
+    peak_db = np.max(rms_db)
+
+    # Find frames below closure threshold (relative to peak)
+    closure_frames = rms_db < (peak_db + closure_threshold_db)
+
+    # Find contiguous closure regions
+    has_closure = False
+    closure_ms = 0.0
+
+    if np.any(closure_frames):
+        # Find longest contiguous run of closure frames
+        diffs = np.diff(closure_frames.astype(int))
+        starts = np.where(diffs == 1)[0] + 1
+        ends = np.where(diffs == -1)[0] + 1
+
+        # Handle edge cases
+        if closure_frames[0]:
+            starts = np.concatenate([[0], starts])
+        if closure_frames[-1]:
+            ends = np.concatenate([ends, [len(closure_frames)]])
+
+        if len(starts) > 0 and len(ends) > 0:
+            lengths = ends[:len(starts)] - starts[:len(ends)]
+            if len(lengths) > 0:
+                longest = np.max(lengths)
+                closure_ms = float(longest * hop / sr * 1000)
+                has_closure = 5.0 < closure_ms < closure_max_ms
+
+    if has_closure:
+        classification = "tap"
+        confidence = min(1.0, 0.5 + closure_ms / 40.0)
+    else:
+        classification = "approximant"
+        rms_cv = float(np.std(rms) / (np.mean(rms) + 1e-10))
+        confidence = min(1.0, max(0.5, 1.0 - rms_cv))
+
+    return {
+        "classification": classification,
+        "has_closure": has_closure,
+        "closure_duration_ms": round(closure_ms, 1),
+        "confidence": round(confidence, 3),
+    }
