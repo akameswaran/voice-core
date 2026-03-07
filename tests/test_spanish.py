@@ -40,3 +40,32 @@ def test_get_spanish_vowel_norms_loads():
     norms = get_spanish_vowel_norms()
     assert set(norms.keys()) == {"A", "E", "I", "O", "U"}
     assert norms["A"]["f1_mean"] > 0
+
+
+def test_vowel_purity_stable_vowel():
+    """A stable vowel (no drift) should score near 1.0."""
+    from voice_core.spanish import score_vowel_purity
+    rng = np.random.default_rng(42)
+    f1_frames = 750.0 + rng.normal(0, 10, size=20)
+    f2_frames = 1250.0 + rng.normal(0, 15, size=20)
+    result = score_vowel_purity(f1_frames, f2_frames, expected_vowel="A")
+    assert result["purity"] > 0.85
+    assert result["diphthongized"] is False
+
+
+def test_vowel_purity_diphthongized():
+    """A drifting vowel (e->eI) should score low and flag diphthongization."""
+    from voice_core.spanish import score_vowel_purity
+    n = 20
+    f1_frames = np.linspace(450, 400, n)
+    f2_frames = np.linspace(1900, 2200, n)
+    result = score_vowel_purity(f1_frames, f2_frames, expected_vowel="E")
+    assert result["purity"] < 0.6
+    assert result["diphthongized"] is True
+
+
+def test_vowel_purity_too_few_frames():
+    """Should return None if fewer than 4 frames."""
+    from voice_core.spanish import score_vowel_purity
+    result = score_vowel_purity(np.array([750.0, 745.0]), np.array([1250.0, 1260.0]), "A")
+    assert result is None
