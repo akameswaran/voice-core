@@ -10,6 +10,29 @@ from pathlib import Path
 
 import numpy as np
 
+# Spanish MFA IPA labels → our 5-vowel categories
+# MFA Spanish outputs IPA phone labels; we map vowels only
+SPANISH_IPA_TO_VOWEL = {
+    "a": "A", "a̠": "A",
+    "e": "E", "e̞": "E",
+    "i": "I",
+    "o": "O", "o̞": "O",
+    "u": "U",
+}
+
+# Consonant labels that are pronunciation targets for Rioplatense
+# These are used to identify segments for consonant analysis
+SPANISH_CONSONANT_TARGETS = {
+    "ʃ": "sheismo",    # Rioplatense LL/Y (correct production)
+    "ʒ": "sheismo",    # Voiced variant of sheísmo
+    "j": "yeismo",     # Non-Rioplatense glide (what English speakers produce)
+    "ʎ": "yeismo",     # Palatal lateral (another non-Rioplatense variant)
+    "ɾ": "tap_r",      # Spanish tap-r (correct)
+    "r": "trill_r",    # Spanish trill-r (correct)
+    "s": "sibilant",   # For s-aspiration detection
+    "h": "aspiration", # Aspirated /s/ in Rioplatense
+}
+
 _SPANISH_NORMS_PATH = Path(__file__).parent / "data" / "spanish_vowel_norms.json"
 _SPANISH_NORMS = None  # Lazy loaded
 

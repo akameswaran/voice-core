@@ -39,6 +39,12 @@ IPA_TO_ARPA = {
 VOWEL_NORMS_PATH = Path(__file__).parent / "data" / "vowel_norms.json"
 MFA_CONDA_ENV = "mfa"
 
+# Language → (acoustic_model, dictionary_model) for MFA
+MFA_MODELS = {
+    "en": ("english_mfa", "english_mfa"),
+    "es": ("spanish_mfa", "spanish_mfa"),
+}
+
 _vowel_norms_cache = None
 
 
@@ -51,13 +57,15 @@ def _get_vowel_norms() -> dict:
 
 
 def align(wav_path: str, transcript: str,
-          output_textgrid: Optional[str] = None) -> str:
+          output_textgrid: Optional[str] = None,
+          language: str = "en") -> str:
     """Run MFA forced alignment on a single audio file.
 
     Args:
         wav_path: Path to WAV file.
         transcript: Orthographic transcript of the audio.
         output_textgrid: Output TextGrid path. If None, writes next to WAV.
+        language: Language code ("en" or "es").
 
     Returns:
         Path to the output TextGrid file.
@@ -65,6 +73,8 @@ def align(wav_path: str, transcript: str,
     wav_path = str(Path(wav_path).resolve())
     if output_textgrid is None:
         output_textgrid = wav_path.replace(".wav", ".TextGrid")
+
+    acoustic_model, dictionary_model = MFA_MODELS.get(language, MFA_MODELS["en"])
 
     # Write transcript to temp file next to audio
     with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
@@ -78,7 +88,7 @@ def align(wav_path: str, transcript: str,
             ["conda", "run", "-n", MFA_CONDA_ENV,
              "mfa", "align_one",
              wav_path, txt_path,
-             "english_mfa", "english_mfa",
+             acoustic_model, dictionary_model,
              output_textgrid],
             capture_output=True, text=True, timeout=120,
         )

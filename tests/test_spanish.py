@@ -69,3 +69,24 @@ def test_vowel_purity_too_few_frames():
     from voice_core.spanish import score_vowel_purity
     result = score_vowel_purity(np.array([750.0, 745.0]), np.array([1250.0, 1260.0]), "A")
     assert result is None
+
+
+def test_spanish_ipa_to_vowel_mapping():
+    """Spanish IPA vowel labels should map to our 5-vowel keys."""
+    from voice_core.spanish import SPANISH_IPA_TO_VOWEL
+    assert SPANISH_IPA_TO_VOWEL["a"] == "A"
+    assert SPANISH_IPA_TO_VOWEL["e"] == "E"
+    assert SPANISH_IPA_TO_VOWEL["i"] == "I"
+    assert SPANISH_IPA_TO_VOWEL["o"] == "O"
+    assert SPANISH_IPA_TO_VOWEL["u"] == "U"
+    # Stressed variants
+    assert SPANISH_IPA_TO_VOWEL.get("a̠") == "A"
+
+
+def test_spanish_ipa_consonant_targets():
+    """Consonant targets should include sheísmo and tap-r labels."""
+    from voice_core.spanish import SPANISH_CONSONANT_TARGETS
+    assert "ʃ" in SPANISH_CONSONANT_TARGETS
+    assert "ʒ" in SPANISH_CONSONANT_TARGETS
+    assert "ɾ" in SPANISH_CONSONANT_TARGETS
+    assert "j" in SPANISH_CONSONANT_TARGETS
