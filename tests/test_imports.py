@@ -25,6 +25,17 @@ def test_video_monitor_imports():
     from voice_core.video_monitor import VideoTensionMonitor
 
 
+def test_spanish_imports():
+    from voice_core.spanish import (
+        analyze_spanish, analyze_spanish_words, classify_vowel_spanish,
+        score_vowel_purity, get_spanish_vowel_norms,
+    )
+
+
+def test_spanish_consonants_imports():
+    from voice_core.spanish_consonants import classify_sheismo, classify_tap_r
+
+
 def test_world_convert_imports():
     from voice_core.world_convert import warp_spectral_envelope
 
