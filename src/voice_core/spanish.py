@@ -6,6 +6,8 @@ work with either MFA phoneme boundaries or Whisper word timestamps.
 """
 
 import json
+import subprocess
+import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -247,3 +249,158 @@ def analyze_spanish_words(
         "vowel_scores": vowel_scores,
         "summary": summary,
     }
+
+
+def _mfa_available() -> bool:
+    """Check if MFA is installed and accessible."""
+    try:
+        result = subprocess.run(
+            ["conda", "run", "-n", "mfa", "mfa", "version"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def analyze_spanish(
+    wav_path: str,
+    transcript: str,
+    target_sounds: list[dict] | None = None,
+    dialect: str = "rioplatense",
+) -> dict:
+    """Full Spanish pronunciation analysis using MFA alignment.
+
+    Runs MFA forced alignment to get phoneme boundaries, then extracts
+    formants and classifies consonants at each target phoneme.
+
+    Falls back gracefully if MFA is not installed — returns structure
+    with mfa_available=False and empty results.
+
+    Args:
+        wav_path: Path to WAV file.
+        transcript: Spanish transcript of the audio.
+        target_sounds: Optional list of {"word": str, "feature": str}.
+            If None, analyzes all detected vowels and Rioplatense consonants.
+        dialect: "rioplatense" (default) — affects which consonants to check.
+
+    Returns:
+        Dict with {mfa_available, phoneme_alignment, consonant_features,
+                    vowel_scores, summary}
+    """
+    from voice_core.spanish_consonants import classify_sheismo, classify_tap_r
+
+    empty_result = {
+        "mfa_available": False,
+        "phoneme_alignment": None,
+        "consonant_features": [],
+        "vowel_scores": [],
+        "summary": {"sheismo_score": None, "tap_r_score": None, "vowel_purity_avg": None},
+    }
+
+    if not _mfa_available():
+        return empty_result
+
+    try:
+        from voice_core.phoneme_align import align
+        import soundfile as sf
+
+        wav_path = str(Path(wav_path).resolve())
+
+        # Run MFA alignment
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tg_path = str(Path(tmpdir) / "aligned.TextGrid")
+            align(wav_path, transcript, tg_path, language="es")
+
+            # Load audio for segment extraction
+            y, sr = sf.read(wav_path, dtype="float32")
+
+            # Extract vowel formants using Spanish IPA mapping
+            from praatio import textgrid
+            tg = textgrid.openTextgrid(tg_path, includeEmptyIntervals=False)
+            phones = tg.getTier("phones")
+
+            vowel_scores = []
+            consonant_features = []
+
+            import parselmouth
+            from parselmouth import praat
+
+            for start, end, label in phones.entries:
+                dur = end - start
+                if dur < 0.03:
+                    continue
+
+                # Check vowels
+                if label in SPANISH_IPA_TO_VOWEL:
+                    vowel_key = SPANISH_IPA_TO_VOWEL[label]
+                    start_sample = int(start * sr)
+                    end_sample = int(end * sr)
+                    segment = y[start_sample:end_sample]
+
+                    snd = parselmouth.Sound(segment, sampling_frequency=sr)
+                    formant = praat.call(snd, "To Formant (burg)", 0.0, 5, 5500, 0.025, 50.0)
+                    n_frames = praat.call(formant, "Get number of frames")
+                    f1_frames, f2_frames = [], []
+                    for fi in range(1, n_frames + 1):
+                        t = praat.call(formant, "Get time from frame number", fi)
+                        f1 = praat.call(formant, "Get value at time", 1, t, "Hertz", "Linear")
+                        f2 = praat.call(formant, "Get value at time", 2, t, "Hertz", "Linear")
+                        if f1 > 0 and f2 > 0:
+                            f1_frames.append(f1)
+                            f2_frames.append(f2)
+
+                    if f1_frames:
+                        purity = score_vowel_purity(
+                            np.array(f1_frames), np.array(f2_frames), vowel_key)
+                        if purity:
+                            purity["phoneme"] = label
+                            purity["vowel"] = vowel_key
+                            purity["start"] = start
+                            purity["end"] = end
+                            vowel_scores.append(purity)
+
+                # Check consonants
+                if label in SPANISH_CONSONANT_TARGETS:
+                    target_type = SPANISH_CONSONANT_TARGETS[label]
+                    start_sample = int(start * sr)
+                    end_sample = int(end * sr)
+                    segment = y[start_sample:end_sample]
+
+                    if target_type in ("sheismo", "yeismo"):
+                        result = classify_sheismo(segment, sr)
+                        result["phoneme"] = label
+                        result["feature"] = "sheismo"
+                        result["start"] = start
+                        result["end"] = end
+                        consonant_features.append(result)
+                    elif target_type == "tap_r":
+                        result = classify_tap_r(segment, sr)
+                        result["phoneme"] = label
+                        result["feature"] = "tap_r"
+                        result["start"] = start
+                        result["end"] = end
+                        consonant_features.append(result)
+
+        # Summary
+        sheismo_scores = [c["confidence"] for c in consonant_features
+                          if c.get("classification") == "sheismo"]
+        tap_scores = [c["confidence"] for c in consonant_features
+                      if c.get("classification") == "tap"]
+        purity_vals = [v["purity"] for v in vowel_scores]
+
+        return {
+            "mfa_available": True,
+            "phoneme_alignment": tg_path,
+            "consonant_features": consonant_features,
+            "vowel_scores": vowel_scores,
+            "summary": {
+                "sheismo_score": round(float(np.mean(sheismo_scores)), 3) if sheismo_scores else None,
+                "tap_r_score": round(float(np.mean(tap_scores)), 3) if tap_scores else None,
+                "vowel_purity_avg": round(float(np.mean(purity_vals)), 3) if purity_vals else None,
+            },
+        }
+
+    except Exception as e:
+        empty_result["error"] = str(e)
+        return empty_result

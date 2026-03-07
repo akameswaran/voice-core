@@ -122,3 +122,32 @@ def test_analyze_spanish_words_empty_targets():
     result = analyze_spanish_words(y, sr, [], [])
     assert result["consonant_features"] == []
     assert result["vowel_scores"] == []
+
+
+def test_analyze_spanish_graceful_fallback():
+    """Should return error info (not crash) if MFA is unavailable."""
+    from voice_core.spanish import analyze_spanish
+    import tempfile, soundfile as sf
+    sr = 16000
+    y = np.random.default_rng(42).normal(0, 0.1, sr).astype(np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y, sr)
+        result = analyze_spanish(f.name, "hola")
+    # If MFA is not installed, should still return structure with mfa_available=False
+    assert "mfa_available" in result
+    if not result["mfa_available"]:
+        assert result["consonant_features"] == []
+        assert result["vowel_scores"] == []
+
+
+def test_analyze_spanish_returns_expected_keys():
+    """Should return all expected top-level keys."""
+    from voice_core.spanish import analyze_spanish
+    import tempfile, soundfile as sf
+    sr = 16000
+    y = np.random.default_rng(42).normal(0, 0.1, sr).astype(np.float32)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        sf.write(f.name, y, sr)
+        result = analyze_spanish(f.name, "hola")
+    for key in ["mfa_available", "consonant_features", "vowel_scores", "summary"]:
+        assert key in result, f"Missing key: {key}"
