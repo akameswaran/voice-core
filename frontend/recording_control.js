@@ -874,54 +874,13 @@ export class RecordingControl extends EventTarget {
 
         let html = `<div class="vc-rc-bar">`;
 
-        // Setup toggle (only if there are setup controls to show)
+        // ── LEFT GROUP: Audio/mic setup ──────────────────────────────
         const hasSetup = o.showSourceSelect || o.showDeviceSelect || o.showChannelSelect;
         if (hasSetup) {
             html += `<button class="vc-rc-btn vc-rc-btn-check vc-rc-setup-toggle" data-rc="setupToggle" title="Mic setup">&#9881;</button>`;
-        }
 
-        // Camera toggle + calibrate + inline preview
-        if (o.showCamera) {
-            html += `
-                <span class="vc-rc-divider"></span>
-                <label class="vc-rc-camera-label">
-                    <input type="checkbox" data-rc="cameraToggle"
-                           ${o.cameraDefault ? 'checked' : ''}>
-                    <span>Camera</span>
-                </label>
-                <button class="vc-rc-btn vc-rc-btn-check vc-rc-btn-cam" data-rc="calibrateBtn"
-                        title="Preview camera &amp; calibrate">Calibrate</button>
-                <div class="vc-rc-camera-preview" data-rc="cameraPreview" style="display:none"></div>`;
-        }
-
-        // Action buttons — Start/Stop share a fixed-width slot so bar doesn't reflow
-        html += `
-            <span class="vc-rc-divider"></span>
-            <button class="vc-rc-btn vc-rc-btn-check" data-rc="checkBtn">Check Level</button>
-            <span class="vc-rc-start-stop-slot">
-                <button class="vc-rc-btn vc-rc-btn-start" data-rc="startBtn">Start</button>
-                <button class="vc-rc-btn vc-rc-btn-stop" data-rc="stopBtn" style="display:none">Stop</button>
-            </span>`;
-
-        if (o.showDeleteButton) {
-            html += `
-                <button class="vc-rc-btn vc-rc-btn-delete" data-rc="deleteBtn" style="display:none"
-                        title="Delete last saved recording">Delete</button>`;
-        }
-
-        // Status dot
-        html += `
-            <div class="vc-rc-status" data-rc="status">
-                <div class="vc-rc-status-dot" data-rc="statusDot"></div>
-                <span data-rc="statusText">Ready</span>
-            </div>`;
-
-        html += `</div>`; // .vc-rc-bar
-
-        // Setup panel (hidden by default, toggled by gear button)
-        if (hasSetup) {
-            html += `<div class="vc-rc-setup-panel" data-rc="setupPanel" style="display:none">`;
-
+            // Setup dropdowns inline (hidden by default, toggled by gear)
+            html += `<span class="vc-rc-setup-inline" data-rc="setupPanel" style="display:none">`;
             if (o.showSourceSelect) {
                 html += `
                     <select class="vc-rc-select" data-rc="sourceSelect">
@@ -948,8 +907,46 @@ export class RecordingControl extends EventTarget {
                         <option value="1"${o.defaultChannel === 1 ? ' selected' : ''}>Right (ch1)</option>
                     </select>`;
             }
-            html += `</div>`; // .vc-rc-setup-panel
+            html += `</span>`;
         }
+
+        // ── CENTER: Action buttons ───────────────────────────────────
+        html += `
+            <span class="vc-rc-divider"></span>
+            <button class="vc-rc-btn vc-rc-btn-check" data-rc="checkBtn">Check Level</button>
+            <span class="vc-rc-start-stop-slot">
+                <button class="vc-rc-btn vc-rc-btn-start" data-rc="startBtn">Start</button>
+                <button class="vc-rc-btn vc-rc-btn-stop" data-rc="stopBtn" style="display:none">Stop</button>
+            </span>`;
+
+        // ── RIGHT GROUP: Camera + status ─────────────────────────────
+        if (o.showCamera) {
+            html += `
+                <span class="vc-rc-divider"></span>
+                <label class="vc-rc-camera-label">
+                    <input type="checkbox" data-rc="cameraToggle"
+                           ${o.cameraDefault ? 'checked' : ''}>
+                    <span>Camera</span>
+                </label>
+                <button class="vc-rc-btn vc-rc-btn-check vc-rc-btn-cam" data-rc="calibrateBtn"
+                        title="Preview camera &amp; calibrate">Calibrate</button>
+                <div class="vc-rc-camera-preview" data-rc="cameraPreview" style="display:none"></div>`;
+        }
+
+        if (o.showDeleteButton) {
+            html += `
+                <button class="vc-rc-btn vc-rc-btn-delete" data-rc="deleteBtn" style="display:none"
+                        title="Delete last saved recording">Delete</button>`;
+        }
+
+        // Status dot (far right)
+        html += `
+            <div class="vc-rc-status" data-rc="status">
+                <div class="vc-rc-status-dot" data-rc="statusDot"></div>
+                <span data-rc="statusText">Ready</span>
+            </div>`;
+
+        html += `</div>`; // .vc-rc-bar
 
         // Level meter (inline, hidden by default)
         html += `
@@ -1320,16 +1317,10 @@ if (!document.getElementById(STYLE_ID)) {
     align-items: center;
 }
 
-.vc-rc-setup-panel {
-    display: flex;
+.vc-rc-setup-inline {
+    display: inline-flex;
     align-items: center;
     gap: 0.5rem;
-    flex-wrap: wrap;
-    padding: 0.5rem 1.25rem 0.6rem;
-    background: var(--bg-card);
-    border: 1px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 var(--radius) var(--radius);
 }
 
 /* ── Level Meter ───────────────────────────────────────────────────── */
