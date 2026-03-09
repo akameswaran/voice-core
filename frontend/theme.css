@@ -670,3 +670,6 @@ body.mode-recording .rec-indicator.active { display: flex; }
 .vc-review-progress-value { font-size: 1.3rem; font-weight: 700; }
 
 .vc-review-sessions { margin-bottom: 24px; }
+.vc-review-recordings { margin-bottom: 24px; }
+
+.vc-review-rec-card { cursor: default; }
