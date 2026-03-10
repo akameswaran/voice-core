@@ -143,11 +143,13 @@ def analyze_spanish_words(
             summary: {sheismo_score, tap_r_score, vowel_purity_avg}
     """
     from voice_core.spanish_consonants import classify_sheismo, classify_tap_r
+    from voice_core.spanish_stress import strip_accents
 
-    # Build word→timestamp lookup
+    # Build word→timestamp lookup (accent-stripped keys for robust matching)
     ts_lookup: dict[str, dict] = {}
     for wt in word_timestamps:
-        ts_lookup[wt["word"].lower().strip()] = wt
+        key = strip_accents(wt["word"].lower().strip())
+        ts_lookup[key] = wt
 
     consonant_features = []
     vowel_scores = []
@@ -155,7 +157,7 @@ def analyze_spanish_words(
     for target in target_sounds:
         word = target["word"].lower().strip()
         feature = target["feature"]
-        ts = ts_lookup.get(word)
+        ts = ts_lookup.get(strip_accents(word))
 
         if ts is None:
             consonant_features.append({

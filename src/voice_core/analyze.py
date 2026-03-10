@@ -1,8 +1,8 @@
-"""Core acoustic analysis module for voice feminization scoring.
+"""Core acoustic analysis module.
 
-Takes a WAV file and produces comprehensive acoustic analysis across
-five categories: pitch, formants/resonance, voice quality, articulation,
-and prosody.
+Produces comprehensive acoustic analysis across pitch, formants/resonance,
+voice quality, articulation, and prosody. Domain-agnostic — coaches provide
+interpretation and scoring.
 """
 
 import json
@@ -62,14 +62,15 @@ _ARPABET_TO_HILLENBRAND = {
 }
 
 
-def _classify_vowel(f1: float, f2: float) -> str | None:
+def _classify_vowel(f1: float, f2: float, norms: dict | None = None) -> str | None:
     """Classify a formant frame into the nearest vowel category.
 
     Uses Euclidean distance in F1×F2 space (Hz-normalized) against vowel
     centroids from reference/vowel_norms.json. Returns vowel key (e.g. "AA")
     or None if the frame is too far from any vowel (likely a consonant).
     """
-    norms = _get_vowel_norms()
+    if norms is None:
+        norms = _get_vowel_norms()
     # Normalize F1 and F2 by typical range to give equal weight
     # F1 range ~250-900 Hz, F2 range ~800-2500 Hz
     F1_SCALE = 500.0
@@ -92,7 +93,7 @@ def _classify_vowel(f1: float, f2: float) -> str | None:
     return best_vowel
 
 
-def _compute_gesture_zscores(f1_vals: list, f2_vals: list, f3_vals: list) -> dict:
+def _compute_gesture_zscores(f1_vals: list, f2_vals: list, f3_vals: list, norms: dict | None = None) -> dict:
     """Compute phoneme-aware gesture z-scores from per-frame formant values.
 
     For each frame, detect which vowel is being produced (from F1+F2 position),
@@ -100,13 +101,14 @@ def _compute_gesture_zscores(f1_vals: list, f2_vals: list, f3_vals: list) -> dic
     all vowel frames to get overall gesture scores.
 
     Returns dict with:
-        f1_zscore: OPC gesture (positive = more feminine)
-        f2_zscore: tongue fronting gesture
-        f3_zscore: lip/brightness gesture
+        f1_zscore: F1 deviation from per-vowel norm (positive = above norm)
+        f2_zscore: F2 deviation from per-vowel norm (positive = above norm)
+        f3_zscore: F3 deviation from per-vowel norm (positive = above norm)
         n_vowel_frames: how many frames were classified as vowels
         vowel_distribution: count per detected vowel
     """
-    norms = _get_vowel_norms()
+    if norms is None:
+        norms = _get_vowel_norms()
 
     f1_zscores = []
     f2_zscores = []
@@ -119,7 +121,7 @@ def _compute_gesture_zscores(f1_vals: list, f2_vals: list, f3_vals: list) -> dic
         if f1 <= 0 or f2 <= 0 or f3 <= 0:
             continue
 
-        vowel = _classify_vowel(f1, f2)
+        vowel = _classify_vowel(f1, f2, norms=norms)
         if vowel is None:
             continue
 
@@ -145,7 +147,9 @@ def _compute_gesture_zscores(f1_vals: list, f2_vals: list, f3_vals: list) -> dic
 
 
 def _compute_per_vowel_zscores(
-    f1_vals: list, f2_vals: list, f3_vals: list, f4_vals: list
+    f1_vals, f2_vals, f3_vals, f4_vals,
+    population_norms: dict | None = None,
+    vowel_mapping: dict | None = None,
 ) -> dict:
     """Compute per-vowel F1 z-scores against Hillenbrand (1995) female norms.
 
@@ -165,6 +169,10 @@ def _compute_per_vowel_zscores(
                 "n_frames": 15}, ...}
         Only vowels with >= 1 classified frame are included.
     """
+    if population_norms is None:
+        population_norms = _HILLENBRAND_FEMALE_F1
+    if vowel_mapping is None:
+        vowel_mapping = _ARPABET_TO_HILLENBRAND
     n = min(len(f1_vals), len(f2_vals))
     f3_len = len(f3_vals)
     f4_len = len(f4_vals)
@@ -183,7 +191,7 @@ def _compute_per_vowel_zscores(
         if arpabet is None:
             continue
 
-        label = _ARPABET_TO_HILLENBRAND.get(arpabet)
+        label = vowel_mapping.get(arpabet)
         if label is None:
             continue  # Vowel not in the 7 target vowels
 
@@ -198,8 +206,8 @@ def _compute_per_vowel_zscores(
     result = {}
     for label, f1_list in vowel_f1.items():
         f1_mean = float(np.mean(f1_list))
-        norms = _HILLENBRAND_FEMALE_F1[label]
-        z = (f1_mean - norms["mean"]) / norms["std"]
+        pnorm = population_norms[label]
+        z = (f1_mean - pnorm["mean"]) / pnorm["std"]
         f2_mean = float(np.mean(vowel_f2[label])) if vowel_f2.get(label) else 0.0
         f3_mean = float(np.mean(vowel_f3[label])) if vowel_f3.get(label) else 0.0
         f4_mean = float(np.mean(vowel_f4[label])) if vowel_f4.get(label) else 0.0
@@ -792,9 +800,9 @@ def analyze_formants(snd: parselmouth.Sound, f0_mean_hz: float = 0.0,
         "bw4_mean_hz": round(bw4_mean, 1),
         "formant_ceiling_used_hz": best_ceiling,
         "formant_ceiling_score": float(best_score),
-        "f1_gesture_zscore": f1_zscore,   # OPC: positive = more feminine
-        "f2_gesture_zscore": f2_zscore,   # Tongue fronting: positive = more feminine
-        "f3_gesture_zscore": f3_zscore,   # Lip/brightness: positive = more feminine
+        "f1_gesture_zscore": f1_zscore,   # Positive = F1 higher than norm for this vowel
+        "f2_gesture_zscore": f2_zscore,   # Positive = F2 higher than norm for this vowel
+        "f3_gesture_zscore": f3_zscore,   # Positive = F3 higher than norm for this vowel
         "gesture_vowel_frames": gesture_zscores["n_vowel_frames"],
         "gesture_vowel_distribution": gesture_zscores["vowel_distribution"],
         "per_vowel_zscores": per_vowel_zscores,

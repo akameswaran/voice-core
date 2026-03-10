@@ -132,13 +132,14 @@ class LiveAnalyzer:
     """
 
     def __init__(self, device=None, sr: int = 48000, block_size: int = 1024,
-                 crepe_device: str = "cuda:0",
+                 crepe_device: str = "cuda:0", formant_ceiling: float = 5500.0,
                  realtime_coach=None, exercise_manager=None,
                  zone_classifier=None, recordings_dir=None):
         self.device = device
         self.sr = sr
         self.block_size = block_size
         self.crepe_device = crepe_device
+        self.formant_ceiling = formant_ceiling
         self.ring = RingBuffer(sr * 2)  # 2 seconds of audio
         self.latest = {
             "ts": 0.0,
@@ -453,7 +454,7 @@ class LiveAnalyzer:
             except OSError:
                 pass
 
-        return filename
+        return str(path)
 
     def get_coaching_log(self) -> list[dict]:
         """Return accumulated coaching messages with session_t timestamps."""
@@ -567,7 +568,7 @@ class LiveAnalyzer:
 
                 snd = parselmouth.Sound(chunk, sampling_frequency=self.sr)
                 # Single ceiling for speed (5500 = best for feminine-range analysis)
-                formant = call(snd, "To Formant (burg)", 0.0, 5, 5500.0, 0.025, 50.0)
+                formant = call(snd, "To Formant (burg)", 0.0, 5, self.formant_ceiling, 0.025, 50.0)
                 n_frames = call(formant, "Get number of frames")
 
                 f1s, f2s, f3s, f4s = [], [], [], []
