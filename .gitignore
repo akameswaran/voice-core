@@ -4,3 +4,7 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+# Session management
+.project-archive/
+.archive-queue
+.claude/
