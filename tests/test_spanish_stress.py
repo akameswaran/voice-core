@@ -1,11 +1,15 @@
 # tests/test_spanish_stress.py
-"""Tests for Spanish syllabification, stress rules, and vos detection."""
+"""Tests for Spanish syllabification, stress rules, vos detection, and acoustic stress."""
 
+import numpy as np
 import pytest
 
 from voice_core.spanish_stress import (
+    detect_stress,
     expected_stress_index,
+    extract_intensity,
     is_vos_form,
+    score_stress_placement,
     strip_accents,
     syllabify_spanish,
 )
@@ -324,3 +328,176 @@ class TestStripAccents:
     def test_uppercase_passthrough(self):
         # We only handle lowercase accents per spec
         assert strip_accents("Á") == "A"
+
+
+# ── extract_intensity ─────────────────────────────────────────────
+
+
+class TestExtractIntensity:
+    """Intensity extraction via Parselmouth."""
+
+    def test_sine_wave_returns_nonempty(self):
+        sr = 16000
+        t = np.linspace(0, 0.5, int(sr * 0.5), endpoint=False)
+        y = np.sin(2 * np.pi * 440 * t).astype(np.float64)
+        values, times = extract_intensity(y, sr)
+        assert len(values) > 0
+        assert len(times) > 0
+
+    def test_matching_lengths(self):
+        sr = 16000
+        t = np.linspace(0, 0.5, int(sr * 0.5), endpoint=False)
+        y = np.sin(2 * np.pi * 440 * t).astype(np.float64)
+        values, times = extract_intensity(y, sr)
+        assert len(values) == len(times)
+
+    def test_silence_returns_low_db(self):
+        sr = 16000
+        y = np.zeros(int(sr * 0.5), dtype=np.float64)
+        values, times = extract_intensity(y, sr)
+        # Silence should produce very low dB (or NaN for true silence).
+        # Parselmouth may return undefined/nan for silence, so we check
+        # that any finite values are below a reasonable speech threshold.
+        finite = values[np.isfinite(values)]
+        if len(finite) > 0:
+            assert np.all(finite < 40.0), f"Expected low dB for silence, got max {finite.max()}"
+
+
+# ── detect_stress ─────────────────────────────────────────────────
+
+
+class TestDetectStress:
+    """Acoustic stress detection using F0 + intensity."""
+
+    def test_empty_word_list(self):
+        sr = 16000
+        y = np.zeros(sr, dtype=np.float64)
+        assert detect_stress(y, sr, []) == []
+
+    def test_monosyllabic_word_filtered(self):
+        """Monosyllabic words are skipped — result list should be empty."""
+        sr = 16000
+        t = np.linspace(0, 1.0, sr, endpoint=False)
+        y = np.sin(2 * np.pi * 200 * t).astype(np.float64)
+        words = [{"word": "sol", "start": 0.0, "end": 0.5}]
+        result = detect_stress(y, sr, words)
+        assert result == []
+
+    def test_louder_second_syllable_detected(self):
+        """A two-syllable 'word' where the second half is louder should
+        detect stress on syllable index 1."""
+        sr = 16000
+        duration = 1.0
+        n_samples = int(sr * duration)
+        t = np.linspace(0, duration, n_samples, endpoint=False)
+
+        # First half: quiet tone, second half: loud tone
+        mid = n_samples // 2
+        y = np.zeros(n_samples, dtype=np.float64)
+        y[:mid] = 0.05 * np.sin(2 * np.pi * 200 * t[:mid])
+        y[mid:] = 0.8 * np.sin(2 * np.pi * 200 * t[mid:])
+
+        # Use a simple word that syllabifies to 2 syllables and
+        # expects stress on the last syllable (ends in consonant → aguda)
+        words = [{"word": "tener", "start": 0.0, "end": duration}]
+        result = detect_stress(y, sr, words)
+
+        assert len(result) == 1
+        r = result[0]
+        assert r["word"] == "tener"
+        assert len(r["syllables"]) == 2
+        # The louder half maps to syllable 1
+        assert r["detected_syllable"] == 1
+
+    def test_is_vos_flag(self):
+        """Vos conjugation words should have is_vos=True."""
+        sr = 16000
+        duration = 0.8
+        n_samples = int(sr * duration)
+        t = np.linspace(0, duration, n_samples, endpoint=False)
+        y = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float64)
+
+        words = [{"word": "hablás", "start": 0.0, "end": duration}]
+        result = detect_stress(y, sr, words)
+        assert len(result) == 1
+        assert result[0]["is_vos"] is True
+
+    def test_non_vos_flag(self):
+        """Non-vos words should have is_vos=False."""
+        sr = 16000
+        duration = 0.8
+        n_samples = int(sr * duration)
+        t = np.linspace(0, duration, n_samples, endpoint=False)
+        y = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float64)
+
+        words = [{"word": "hablas", "start": 0.0, "end": duration}]
+        result = detect_stress(y, sr, words)
+        assert len(result) == 1
+        assert result[0]["is_vos"] is False
+
+    def test_confidence_range(self):
+        """Confidence should be between 0 and 1."""
+        sr = 16000
+        duration = 1.0
+        n_samples = int(sr * duration)
+        t = np.linspace(0, duration, n_samples, endpoint=False)
+        y = (0.4 * np.sin(2 * np.pi * 220 * t)).astype(np.float64)
+
+        words = [{"word": "casa", "start": 0.0, "end": duration}]
+        result = detect_stress(y, sr, words)
+        assert len(result) == 1
+        assert 0.0 <= result[0]["confidence"] <= 1.0
+
+    def test_result_structure(self):
+        """Verify all expected keys are present in result dict."""
+        sr = 16000
+        duration = 0.8
+        n_samples = int(sr * duration)
+        t = np.linspace(0, duration, n_samples, endpoint=False)
+        y = (0.3 * np.sin(2 * np.pi * 200 * t)).astype(np.float64)
+
+        words = [{"word": "casa", "start": 0.0, "end": duration}]
+        result = detect_stress(y, sr, words)
+        assert len(result) == 1
+        r = result[0]
+        expected_keys = {
+            "word", "syllables", "expected_syllable",
+            "detected_syllable", "correct", "confidence", "is_vos",
+        }
+        assert set(r.keys()) == expected_keys
+
+        # Check syllable structure
+        syl = r["syllables"][0]
+        syl_keys = {"text", "f0_mean_hz", "intensity_db", "duration_ms", "stress_score"}
+        assert set(syl.keys()) == syl_keys
+
+
+# ── score_stress_placement ────────────────────────────────────────
+
+
+class TestScoreStressPlacement:
+    """Convenience wrapper for stress scoring."""
+
+    def test_extracts_fields(self):
+        fake_result = {
+            "word": "casa",
+            "syllables": [
+                {"text": "ca", "f0_mean_hz": 150.0, "intensity_db": 70.0,
+                 "duration_ms": 200.0, "stress_score": 0.8},
+                {"text": "sa", "f0_mean_hz": 130.0, "intensity_db": 65.0,
+                 "duration_ms": 180.0, "stress_score": 0.4},
+            ],
+            "expected_syllable": 0,
+            "detected_syllable": 0,
+            "correct": True,
+            "confidence": 0.5,
+            "is_vos": False,
+        }
+        result = score_stress_placement("casa", fake_result)
+        assert result["word"] == "casa"
+        assert result["expected_syllable"] == 0
+        assert result["detected_syllable"] == 0
+        assert result["correct"] is True
+        assert result["confidence"] == 0.5
+        assert result["is_vos"] is False
+        assert len(result["syllables"]) == 2

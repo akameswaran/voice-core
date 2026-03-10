@@ -54,23 +54,8 @@ def classify_vowel_spanish(f1: float, f2: float) -> str | None:
     Uses Euclidean distance in F1xF2 space against Spanish 5-vowel norms.
     Returns vowel key ("A", "E", "I", "O", "U") or None if too far.
     """
-    norms = get_spanish_vowel_norms()
-    F1_SCALE = 500.0
-    F2_SCALE = 1000.0
-
-    best_vowel = None
-    best_dist = float("inf")
-
-    for vowel, ref in norms.items():
-        d = ((f1 - ref["f1_mean"]) / F1_SCALE) ** 2 + \
-            ((f2 - ref["f2_mean"]) / F2_SCALE) ** 2
-        if d < best_dist:
-            best_dist = d
-            best_vowel = vowel
-
-    if best_dist > 2.25:
-        return None
-    return best_vowel
+    from voice_core.analyze import _classify_vowel
+    return _classify_vowel(f1, f2, norms=get_spanish_vowel_norms())
 
 
 def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
@@ -231,6 +216,11 @@ def analyze_spanish_words(
             except Exception:
                 pass
 
+    # Stress analysis
+    from voice_core.spanish_stress import detect_stress
+
+    stress_results = detect_stress(y, sr, word_timestamps)
+
     # Summary
     sheismo_scores = [c["confidence"] for c in consonant_features
                       if c.get("feature") == "sheismo" and c.get("classification") == "sheismo"]
@@ -238,15 +228,19 @@ def analyze_spanish_words(
                   if c.get("feature") == "tap_r" and c.get("classification") == "tap"]
     purity_vals = [v["purity"] for v in vowel_scores]
 
+    stress_correct = [s for s in stress_results if s["correct"]]
+
     summary = {
         "sheismo_score": round(float(np.mean(sheismo_scores)), 3) if sheismo_scores else None,
         "tap_r_score": round(float(np.mean(tap_scores)), 3) if tap_scores else None,
         "vowel_purity_avg": round(float(np.mean(purity_vals)), 3) if purity_vals else None,
+        "stress_accuracy": round(len(stress_correct) / len(stress_results), 3) if stress_results else None,
     }
 
     return {
         "consonant_features": consonant_features,
         "vowel_scores": vowel_scores,
+        "stress_analysis": stress_results,
         "summary": summary,
     }
 

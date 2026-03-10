@@ -1,11 +1,16 @@
-"""Spanish syllabification, stress rules, and vos detection.
+"""Spanish syllabification, stress rules, vos detection, and acoustic stress.
 
 Rule-based syllable splitting for Spanish text, following standard
 Spanish phonological conventions. Used for stress pattern analysis
-and Rioplatense vos conjugation detection.
+and Rioplatense vos conjugation detection. Includes acoustic stress
+detection using F0 and intensity analysis via Parselmouth.
 """
 
+from __future__ import annotations
+
 import unicodedata
+
+import numpy as np
 
 # Vowel categories
 _STRONG = set("aeoáéó")
@@ -312,3 +317,179 @@ def is_vos_form(word: str) -> bool:
         return True
 
     return False
+
+
+# ── Acoustic stress detection ─────────────────────────────────────
+
+
+def extract_intensity(y: np.ndarray, sr: int) -> tuple[np.ndarray, np.ndarray]:
+    """Extract intensity contour using Parselmouth.
+
+    Returns (intensity_db, time_s) arrays.
+    Uses Praat's 'To Intensity' with 100 Hz minimum pitch, 0.01s time step.
+    """
+    import parselmouth
+
+    snd = parselmouth.Sound(y, sampling_frequency=sr)
+    intensity = snd.to_intensity(minimum_pitch=100.0, time_step=0.01)
+
+    times = intensity.xs()
+    values = np.array([intensity.get_value(t) for t in times])
+
+    return values, np.array(times)
+
+
+def detect_stress(
+    y: np.ndarray,
+    sr: int,
+    word_boundaries: list[dict],
+) -> list[dict]:
+    """Detect acoustic stress placement for each polysyllabic word.
+
+    Args:
+        y: Audio array (float32, mono)
+        sr: Sample rate
+        word_boundaries: List of {"word": str, "start": float, "end": float}
+            from Whisper word timestamps.
+
+    Returns list of per-word stress analysis dicts:
+    {
+        "word": str,
+        "syllables": [
+            {"text": str, "f0_mean_hz": float, "intensity_db": float,
+             "duration_ms": float, "stress_score": float},
+        ],
+        "expected_syllable": int,   # index from syllabify + stress rules
+        "detected_syllable": int,   # index of highest stress_score
+        "correct": bool,
+        "confidence": float,        # how clearly one syllable dominates
+        "is_vos": bool,
+    }
+    """
+    import parselmouth
+    from parselmouth import praat
+
+    if not word_boundaries:
+        return []
+
+    # Extract full-audio pitch and intensity once
+    snd = parselmouth.Sound(y, sampling_frequency=sr)
+    pitch = praat.call(snd, "To Pitch", 0.01, 75, 600)
+    intensity_values, intensity_times = extract_intensity(y, sr)
+
+    results: list[dict] = []
+
+    for wb in word_boundaries:
+        word = wb["word"]
+        w_start = wb["start"]
+        w_end = wb["end"]
+        w_dur = w_end - w_start
+
+        # Syllabify
+        syllables = syllabify_spanish(word)
+        if len(syllables) < 2:
+            continue  # skip monosyllabic
+
+        # Estimate syllable time boundaries proportionally by character count
+        total_chars = sum(len(s) for s in syllables)
+        syl_boundaries: list[tuple[float, float]] = []
+        cur_t = w_start
+        for s in syllables:
+            frac = len(s) / total_chars
+            syl_dur = frac * w_dur
+            syl_boundaries.append((cur_t, cur_t + syl_dur))
+            cur_t += syl_dur
+
+        # Compute per-syllable acoustic features
+        syl_data: list[dict] = []
+        for i, (s_text, (s_start, s_end)) in enumerate(
+            zip(syllables, syl_boundaries)
+        ):
+            dur_ms = (s_end - s_start) * 1000.0
+
+            # F0: mean over syllable window (skip unvoiced frames where F0=0)
+            f0_vals: list[float] = []
+            t = s_start
+            while t <= s_end:
+                f0 = praat.call(pitch, "Get value at time", t, "Hertz", "Linear")
+                if f0 > 0:
+                    f0_vals.append(f0)
+                t += 0.005  # 5ms steps
+            f0_mean = float(np.mean(f0_vals)) if f0_vals else 0.0
+
+            # Intensity: mean over syllable window
+            mask = (intensity_times >= s_start) & (intensity_times <= s_end)
+            int_vals = intensity_values[mask]
+            int_mean = float(np.mean(int_vals)) if len(int_vals) > 0 else 0.0
+
+            syl_data.append({
+                "text": s_text,
+                "f0_mean_hz": round(f0_mean, 1),
+                "intensity_db": round(int_mean, 1),
+                "duration_ms": round(dur_ms, 1),
+                "stress_score": 0.0,  # computed below
+            })
+
+        # Normalize F0 and intensity within the word, then compute stress score
+        f0_values = np.array([s["f0_mean_hz"] for s in syl_data])
+        int_values = np.array([s["intensity_db"] for s in syl_data])
+
+        f0_range = f0_values.max() - f0_values.min()
+        int_range = int_values.max() - int_values.min()
+
+        for i, sd in enumerate(syl_data):
+            f0_norm = (
+                (sd["f0_mean_hz"] - f0_values.min()) / f0_range
+                if f0_range > 0
+                else 0.0
+            )
+            int_norm = (
+                (sd["intensity_db"] - int_values.min()) / int_range
+                if int_range > 0
+                else 0.0
+            )
+            sd["stress_score"] = round(0.5 * f0_norm + 0.5 * int_norm, 3)
+
+        # Find detected syllable
+        scores = [sd["stress_score"] for sd in syl_data]
+        detected_idx = int(np.argmax(scores))
+
+        # Compute confidence: gap between top and runner-up
+        sorted_scores = sorted(scores, reverse=True)
+        max_score = sorted_scores[0]
+        second_max = sorted_scores[1] if len(sorted_scores) > 1 else 0.0
+        confidence = (
+            (max_score - second_max) / max_score if max_score > 0 else 0.0
+        )
+        confidence = round(confidence, 3)
+
+        expected_idx = expected_stress_index(word)
+
+        # If confidence is too low, defer to expected
+        if confidence < 0.15:
+            detected_idx = expected_idx
+
+        results.append({
+            "word": word,
+            "syllables": syl_data,
+            "expected_syllable": expected_idx,
+            "detected_syllable": detected_idx,
+            "correct": detected_idx == expected_idx,
+            "confidence": confidence,
+            "is_vos": is_vos_form(word),
+        })
+
+    return results
+
+
+def score_stress_placement(word: str, stress_result: dict) -> dict:
+    """Convenience: extract stress scoring for a single word from detect_stress output."""
+    return {
+        "word": word,
+        "expected_syllable": stress_result["expected_syllable"],
+        "detected_syllable": stress_result["detected_syllable"],
+        "correct": stress_result["correct"],
+        "confidence": stress_result["confidence"],
+        "is_vos": stress_result["is_vos"],
+        "syllables": stress_result["syllables"],
+    }
