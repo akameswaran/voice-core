@@ -249,9 +249,10 @@ def analyze_spanish_words(
 
 def _mfa_available() -> bool:
     """Check if MFA is installed and accessible."""
+    from voice_core.phoneme_align import MFA_BINARY
     try:
         result = subprocess.run(
-            ["conda", "run", "-n", "mfa", "mfa", "version"],
+            [MFA_BINARY, "version"],
             capture_output=True, text=True, timeout=10,
         )
         return result.returncode == 0

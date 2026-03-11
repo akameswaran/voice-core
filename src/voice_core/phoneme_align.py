@@ -11,6 +11,7 @@ Requires:
   - praatio: pip install praatio (for TextGrid parsing)
 """
 
+import asyncio
 import json
 import os
 import subprocess
@@ -37,12 +38,13 @@ IPA_TO_ARPA = {
 }
 
 VOWEL_NORMS_PATH = Path(__file__).parent / "data" / "vowel_norms.json"
-MFA_CONDA_ENV = "mfa"
+MFA_BINARY = "/home/ak/miniconda3/envs/mfa/bin/mfa"
+MFA_ENV_DIR = str(Path(MFA_BINARY).parent.parent)  # conda env root
 
 # Language → (acoustic_model, dictionary_model) for MFA
 MFA_MODELS = {
     "en": ("english_mfa", "english_mfa"),
-    "es": ("spanish_mfa", "spanish_mfa"),
+    "es": ("spanish_mfa", "spanish_latin_america_mfa"),
 }
 
 _vowel_norms_cache = None
@@ -77,20 +79,20 @@ def align(wav_path: str, transcript: str,
     acoustic_model, dictionary_model = MFA_MODELS.get(language, MFA_MODELS["en"])
 
     # Write transcript to temp file next to audio
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".txt",
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lab",
                                       dir=Path(wav_path).parent,
                                       delete=False) as f:
         f.write(transcript)
         txt_path = f.name
 
     try:
+        env = {**os.environ, "PATH": f"{Path(MFA_BINARY).parent}:{os.environ.get('PATH', '')}"}
         result = subprocess.run(
-            ["conda", "run", "-n", MFA_CONDA_ENV,
-             "mfa", "align_one",
+            [MFA_BINARY, "align_one",
              wav_path, txt_path,
-             acoustic_model, dictionary_model,
+             dictionary_model, acoustic_model,
              output_textgrid],
-            capture_output=True, text=True, timeout=120,
+            capture_output=True, text=True, timeout=30, env=env,
         )
         if result.returncode != 0:
             raise RuntimeError(
@@ -99,6 +101,96 @@ def align(wav_path: str, transcript: str,
         os.unlink(txt_path)
 
     return output_textgrid
+
+
+async def align_async(wav_path: str, transcript: str,
+                      output_textgrid: Optional[str] = None,
+                      language: str = "en") -> str:
+    """Async version of align() using asyncio subprocess.
+
+    Same args/return as align(), but non-blocking.
+    """
+    wav_path = str(Path(wav_path).resolve())
+    if output_textgrid is None:
+        output_textgrid = wav_path.replace(".wav", ".TextGrid")
+
+    acoustic_model, dictionary_model = MFA_MODELS.get(language, MFA_MODELS["en"])
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".lab",
+                                      dir=Path(wav_path).parent,
+                                      delete=False) as f:
+        f.write(transcript)
+        txt_path = f.name
+
+    try:
+        env = {**os.environ, "PATH": f"{Path(MFA_BINARY).parent}:{os.environ.get('PATH', '')}"}
+        proc = await asyncio.create_subprocess_exec(
+            MFA_BINARY, "align_one",
+            wav_path, txt_path,
+            dictionary_model, acoustic_model,
+            output_textgrid,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        try:
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            raise RuntimeError("MFA alignment timed out")
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"MFA alignment failed: {stderr.decode()[:500]}")
+    finally:
+        os.unlink(txt_path)
+
+    return output_textgrid
+
+
+def parse_textgrid(textgrid_path: str) -> dict:
+    """Parse MFA TextGrid into structured word/phone data.
+
+    Args:
+        textgrid_path: Path to MFA-output TextGrid file.
+
+    Returns:
+        Dict with:
+          words: list of {word, start, end}
+          phones: list of {phone, start, end, word}
+        Silence intervals (<eps>, sil) are filtered out.
+        Each phone is associated with its parent word via time overlap.
+    """
+    tg = textgrid.openTextgrid(textgrid_path, includeEmptyIntervals=False)
+
+    # Parse words tier
+    words_tier = tg.getTier("words")
+    words = []
+    for start, end, label in words_tier.entries:
+        if label in ("<eps>", "sil", ""):
+            continue
+        words.append({"word": label, "start": float(start), "end": float(end)})
+
+    # Parse phones tier with parent word association
+    phones_tier = tg.getTier("phones")
+    phones = []
+    for start, end, label in phones_tier.entries:
+        if label in ("sil", ""):
+            continue
+        mid = (float(start) + float(end)) / 2
+        parent_word = None
+        for w in words:
+            if w["start"] <= mid <= w["end"]:
+                parent_word = w["word"]
+                break
+        phones.append({
+            "phone": label,
+            "start": float(start),
+            "end": float(end),
+            "word": parent_word,
+        })
+
+    return {"words": words, "phones": phones}
 
 
 def extract_vowel_formants(wav_path: str, textgrid_path: str,
