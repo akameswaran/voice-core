@@ -1049,6 +1049,25 @@ export class RecordingControl extends EventTarget {
                 this._els.setupToggle.classList.toggle('vc-rc-setup-toggle-active', nowVisible);
             }
         });
+
+        // Spacebar: toggle recording (start or stop)
+        document.addEventListener('keydown', (e) => {
+            if (e.code !== 'Space') return;
+            // Skip when typing in an input
+            const tag = document.activeElement?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+            if (document.activeElement?.isContentEditable) return;
+            // Skip with modifier keys
+            if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+            if (this._state === 'idle' || this._state === 'mic_open') {
+                e.preventDefault();
+                this.start();
+            } else if (this._state === 'recording') {
+                e.preventDefault();
+                this.stop();
+            }
+        });
     }
 
     _updateUI() {
