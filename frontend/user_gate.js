@@ -16,11 +16,17 @@ import { getCookie, setCookie, listUsers, createUser } from './user_api.js';
 const COOKIE_NAME = 'vc_user';
 
 export async function initGate({ redirectTo = '/practice', appName = 'Voice Coach' } = {}) {
-  _injectStyles();
-
-  const mount = document.getElementById('gate-mount') || document.body;
   const forceSwitch = new URLSearchParams(location.search).has('switch');
   const cookieId = getCookie(COOKIE_NAME);
+
+  // Known user, not switching → silent instant redirect, no screen shown
+  if (cookieId && !forceSwitch) {
+    _confirm(cookieId, redirectTo);
+    return;
+  }
+
+  _injectStyles();
+  const mount = document.getElementById('gate-mount') || document.body;
 
   let users = [];
   try {
@@ -30,29 +36,13 @@ export async function initGate({ redirectTo = '/practice', appName = 'Voice Coac
     return;
   }
 
-  const knownUser = cookieId ? users.find(u => u.id === cookieId) : null;
-
-  if (knownUser && !forceSwitch) {
-    _renderContinue(mount, knownUser, redirectTo);
-  } else if (users.length === 0) {
+  if (users.length === 0) {
     _renderCreateForm(mount, redirectTo);
   } else {
     _renderPicker(mount, users, redirectTo);
   }
 }
 
-function _renderContinue(mount, user, redirectTo) {
-  mount.innerHTML = `
-    <div class="gate-screen">
-      <div class="gate-card gate-continue">
-        <div class="gate-label">Welcome back</div>
-        <div class="gate-username">${_esc(user.name)}</div>
-        <div class="gate-hint">Entering automatically…</div>
-        <a href="?switch=1" class="gate-switch-link">Switch user</a>
-      </div>
-    </div>`;
-  setTimeout(() => _confirm(user.id, redirectTo), 1500);
-}
 
 function _renderPicker(mount, users, redirectTo) {
   const cards = users.map(u => `
