@@ -1087,8 +1087,8 @@ def analyze_voice_quality(snd: parselmouth.Sound, f3_mean_hz: float = 0.0,
     hnr_raw = float(hnr) if not np.isnan(hnr) else 0.0
     hnr_clean = _hnr_excluding_frames(snd, fry_times) if fry_times else hnr_raw
 
-    # Spectral tilt via librosa
-    spectral_tilt = _estimate_spectral_tilt(snd)
+    # Spectral tilt via librosa — voiced frames only
+    spectral_tilt = _estimate_spectral_tilt(snd, pitch_obj=pitch_obj)
 
     # H1-A3: difference between first harmonic and third formant amplitude
     h1_a3_raw, h1_a3_corrected = _estimate_h1_a3(
@@ -1155,13 +1155,20 @@ def _estimate_h1_h2(snd: parselmouth.Sound, pitch_obj,
         segment = snd.extract_part(start_t, end_t, parselmouth.WindowShape.HAMMING, 1.0, False)
         spectrum = segment.to_spectrum()
 
-        # Get amplitudes at H1 (f0) and H2 (2*f0)
-        h1_amp = call(spectrum, "Get band energy", f0 * 0.9, f0 * 1.1)
-        h2_amp = call(spectrum, "Get band energy", f0 * 1.8, f0 * 2.2)
+        # Pitch-synchronous peak picking within ±(F0/2) Hz of each harmonic.
+        # VoiceSauce method: avoids the F0-dependent bias of band energy
+        # integration (wider harmonic spacing at high F0 inflates band energy).
+        half_f0 = f0 / 2
+        spec_freqs = np.array(spectrum.xs())
+        spec_amp = np.abs(spectrum.values[0] + 1j * spectrum.values[1])
+        spec_amp_db = 20 * np.log10(spec_amp + 1e-10)
 
-        if h1_amp > 0 and h2_amp > 0:
-            h1_db = 10 * np.log10(h1_amp)
-            h2_db = 10 * np.log10(h2_amp)
+        h1_mask = (spec_freqs >= f0 - half_f0) & (spec_freqs <= f0 + half_f0)
+        h2_mask = (spec_freqs >= 2 * f0 - half_f0) & (spec_freqs <= 2 * f0 + half_f0)
+
+        if h1_mask.sum() > 0 and h2_mask.sum() > 0:
+            h1_db = float(np.max(spec_amp_db[h1_mask]))
+            h2_db = float(np.max(spec_amp_db[h2_mask]))
             raw_val = h1_db - h2_db
             h1_h2_raw_vals.append(raw_val)
 
@@ -1217,14 +1224,19 @@ def _estimate_h1_a3(snd: parselmouth.Sound, pitch_obj, f3_mean_hz: float,
         segment = snd.extract_part(start_t, end_t, parselmouth.WindowShape.HAMMING, 1.0, False)
         spectrum = segment.to_spectrum()
 
-        # H1 amplitude (at F0)
-        h1_amp = call(spectrum, "Get band energy", f0 * 0.9, f0 * 1.1)
-        # A3 amplitude (at F3 region)
-        a3_amp = call(spectrum, "Get band energy", f3_mean_hz * 0.9, f3_mean_hz * 1.1)
+        # Pitch-synchronous peak picking within ±(F0/2) Hz of each target.
+        # Consistent with _estimate_h1_h2 — avoids F0-dependent band-energy bias.
+        half_f0 = f0 / 2
+        spec_freqs = np.array(spectrum.xs())
+        spec_amp = np.abs(spectrum.values[0] + 1j * spectrum.values[1])
+        spec_amp_db = 20 * np.log10(spec_amp + 1e-10)
 
-        if h1_amp > 0 and a3_amp > 0:
-            h1_db = 10 * np.log10(h1_amp)
-            a3_db = 10 * np.log10(a3_amp)
+        h1_mask = (spec_freqs >= f0 - half_f0) & (spec_freqs <= f0 + half_f0)
+        a3_mask = (spec_freqs >= f3_mean_hz - half_f0) & (spec_freqs <= f3_mean_hz + half_f0)
+
+        if h1_mask.sum() > 0 and a3_mask.sum() > 0:
+            h1_db = float(np.max(spec_amp_db[h1_mask]))
+            a3_db = float(np.max(spec_amp_db[a3_mask]))
             h1_a3_raw_vals.append(h1_db - a3_db)
 
             if has_formants:
@@ -1470,17 +1482,38 @@ def _estimate_cpp(snd: parselmouth.Sound) -> float:
         return float(np.mean(cpp_vals)) if cpp_vals else 0.0
 
 
-def _estimate_spectral_tilt(snd: parselmouth.Sound) -> float:
-    """Estimate spectral tilt in dB/octave from the audio signal."""
+def _estimate_spectral_tilt(snd: parselmouth.Sound, pitch_obj=None) -> float:
+    """Estimate spectral tilt in dB/octave from voiced frames only.
+
+    Args:
+        snd: Parselmouth Sound object.
+        pitch_obj: Praat Pitch object for voiced frame selection. When provided,
+            only voiced frames are included in the average, preventing silence
+            and unvoiced segments from systematically flattening the tilt.
+    """
     y = snd.values[0]
     sr = int(snd.sampling_frequency)
 
     # Compute power spectrum
     n_fft = 2048
-    S = np.abs(librosa.stft(y, n_fft=n_fft)) ** 2
+    hop_length = n_fft // 4  # 512 samples
+    S = np.abs(librosa.stft(y, n_fft=n_fft, hop_length=hop_length)) ** 2
 
-    # Average across frames
-    avg_spectrum = np.mean(S, axis=1)
+    # Gate to voiced frames only when pitch object is available
+    if pitch_obj is not None:
+        n_time_frames = S.shape[1]
+        voiced_mask = np.zeros(n_time_frames, dtype=bool)
+        for i in range(n_time_frames):
+            t = i * hop_length / sr
+            f0 = call(pitch_obj, "Get value at time", t, "Hertz", "Linear")
+            voiced_mask[i] = not (np.isnan(f0) or f0 <= 0)
+        if voiced_mask.sum() >= 2:
+            avg_spectrum = np.mean(S[:, voiced_mask], axis=1)
+        else:
+            avg_spectrum = np.mean(S, axis=1)
+    else:
+        avg_spectrum = np.mean(S, axis=1)
+
     freqs = librosa.fft_frequencies(sr=sr, n_fft=n_fft)
 
     # Fit log-log regression (spectral tilt)
@@ -1660,6 +1693,66 @@ def analyze_prosody(pitch_data: dict) -> dict:
     }
 
 
+def check_recording_quality(audio: np.ndarray, sr: int) -> dict:
+    """Check recording quality before analysis.
+
+    Returns:
+        dict with:
+            snr_db: Estimated signal-to-noise ratio (dB). Computed as the ratio
+                between the mean RMS of the loudest quartile and quietest
+                quartile of 25ms frames.
+            clipping_fraction: Fraction of samples with |amplitude| > 0.99.
+            voiced_fraction: Estimated fraction of frames above 10% of peak RMS
+                (rough voiced activity proxy, no pitch tracking needed).
+            quality_ok: True if all thresholds are met (SNR > 15 dB,
+                clipping < 1%, voiced_fraction > 30%).
+    """
+    # Clipping detection
+    clipping_fraction = float(np.mean(np.abs(audio) > 0.99))
+
+    # SNR estimate: loudest quartile RMS vs quietest quartile RMS
+    frame_len = int(sr * 0.025)  # 25ms frames
+    hop = max(1, frame_len // 2)
+    n_frames = max(1, (len(audio) - frame_len) // hop + 1)
+    frame_rms = []
+    for i in range(n_frames):
+        start = i * hop
+        frame = audio[start:start + frame_len]
+        if len(frame) < frame_len:
+            continue
+        frame_rms.append(float(np.sqrt(np.mean(frame ** 2))))
+
+    if len(frame_rms) >= 4:
+        frame_rms_sorted = sorted(frame_rms)
+        q = max(1, len(frame_rms_sorted) // 4)
+        noise_floor = float(np.mean(frame_rms_sorted[:q]))
+        signal_peak = float(np.mean(frame_rms_sorted[-q:]))
+        snr_db = float(20 * np.log10(signal_peak / noise_floor)) if noise_floor > 0 else 60.0
+    else:
+        snr_db = 0.0
+
+    # Voiced fraction: frames louder than 10% of peak RMS
+    if frame_rms:
+        peak_rms = max(frame_rms)
+        threshold = peak_rms * 0.1
+        voiced_fraction = float(sum(1 for r in frame_rms if r > threshold) / len(frame_rms))
+    else:
+        voiced_fraction = 0.0
+
+    quality_ok = (
+        clipping_fraction < 0.01
+        and snr_db > 15.0
+        and voiced_fraction > 0.3
+    )
+
+    return {
+        "snr_db": round(snr_db, 1),
+        "clipping_fraction": round(clipping_fraction, 4),
+        "voiced_fraction": round(voiced_fraction, 3),
+        "quality_ok": bool(quality_ok),
+    }
+
+
 def analyze(wav_path: str, output_path: str | None = None, crepe_device: str = "cuda:0") -> dict:
     """Run full acoustic analysis on a WAV file.
 
@@ -1674,6 +1767,9 @@ def analyze(wav_path: str, output_path: str | None = None, crepe_device: str = "
     """
     wav_path = str(Path(wav_path).resolve())
     y, sr = _load_audio(wav_path)
+
+    # 0. Recording quality gate
+    recording_quality = check_recording_quality(y, sr)
 
     # Parselmouth Sound object (at native sample rate)
     snd = parselmouth.Sound(y, sampling_frequency=sr)
@@ -1713,6 +1809,8 @@ def analyze(wav_path: str, output_path: str | None = None, crepe_device: str = "
         "source_file": wav_path,
         "sample_rate": sr,
         "duration_s": float(len(y) / sr),
+        "quality": recording_quality,
+        "formant_ceiling_used_hz": formant_data.get("formant_ceiling_used_hz", 0),
         "pitch": pitch_data,
         "formants": formant_output,
         "voice_quality": quality_data,
