@@ -8,3 +8,5 @@ build/
 .project-archive/
 .archive-queue
 .claude/
+# Worktrees
+.worktrees/
