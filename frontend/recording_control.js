@@ -128,6 +128,7 @@ export class RecordingControl extends EventTarget {
         this._lastSavedFilename = null;
 
         this._vad = null; // VoiceActivityDetector, created if autoDetect: true
+        this._vadReady = null; // Promise for VAD initialization (resolves after calibration)
 
         // Audio debug counter
         this._audioDbgCount = 0;
@@ -215,6 +216,8 @@ export class RecordingControl extends EventTarget {
         if (this._state !== 'recording') return;
 
         if (this._vad) this._vad.disarm();
+        this._container.style.setProperty('--vc-rc-silence-pct', 0);
+        this._container.classList.remove('vc-rc-silence-counting');
         this._disconnectMetricsWs();
         this._stopAudioStreaming();
         this._closeMic();
@@ -253,6 +256,8 @@ export class RecordingControl extends EventTarget {
     /** Cancel recording without saving */
     cancel() {
         if (this._vad) this._vad.disarm();
+        this._container.style.setProperty('--vc-rc-silence-pct', 0);
+        this._container.classList.remove('vc-rc-silence-counting');
         this._disconnectMetricsWs();
         this._stopAudioStreaming();
         this._closeMic();
@@ -383,7 +388,7 @@ export class RecordingControl extends EventTarget {
 
         // Create VAD if auto-detect enabled
         if (this._opts.autoDetect && !this._vad) {
-            import('./vad.js').then(({ VoiceActivityDetector }) => {
+            this._vadReady = import('./vad.js').then(({ VoiceActivityDetector }) => {
                 this._vad = new VoiceActivityDetector(this._analyser, {
                     silenceMs: this._opts.autoDetectSilenceMs,
                     onsetMs: this._opts.autoDetectOnsetMs,
@@ -395,9 +400,10 @@ export class RecordingControl extends EventTarget {
                     this._container.style.setProperty('--vc-rc-silence-pct', e.detail.pct);
                     this._container.classList.toggle('vc-rc-silence-counting', e.detail.pct > 0);
                 });
-                // Calibrate immediately (mic is open at this point)
-                this._vad.calibrate(2000).then(floor => {
+                return this._vad.calibrate(2000).then(floor => {
                     console.log('[vc-rc] VAD noise floor:', floor.toFixed(1), 'dBFS threshold:', this._vad.thresholdDb.toFixed(1), 'dBFS');
+                    // If already recording (direct start() path), arm immediately
+                    if (this._state === 'recording') this._vad.arm();
                 });
             });
         }
@@ -405,6 +411,7 @@ export class RecordingControl extends EventTarget {
 
     _closeMic() {
         if (this._vad) { this._vad.destroy(); this._vad = null; }
+        this._vadReady = null;
         this._stopAudioStreaming();
         if (this._audioWs) {
             this._audioWs.onclose = null;
