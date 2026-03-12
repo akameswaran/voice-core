@@ -45,6 +45,7 @@ export function initConverse(opts = {}) {
   let workletNode = null;
   let mediaStream = null;
   let vad = null;
+  let currentAudio = null;
   let autoDetectEnabled = autoDetect;
   let currentTopicId = null;
 
@@ -112,30 +113,36 @@ export function initConverse(opts = {}) {
 
   // ── Core flow ────────────────────────────────────────────────────
   async function startSession() {
-    currentTopicId = topicSel.value;
-    await _openMic();
+    try {
+      currentTopicId = topicSel.value;
+      await _openMic();
 
-    if (autoDetectEnabled) {
-      setStatus('Calibrating mic...');
-      await vad.calibrate(2000);
-      setStatus('');
+      if (autoDetectEnabled) {
+        setStatus('Calibrating mic...');
+        await vad.calibrate(2000);
+        setStatus('');
+      }
+
+      const userId = userIdFn();
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}${wsPath}?user_id=${userId}`);
+      ws.addEventListener('open', () => {
+        ws.send(JSON.stringify({ type: 'converse:start', topic_id: currentTopicId }));
+      });
+      ws.addEventListener('message', _onWsMessage);
+      ws.addEventListener('close', _onWsClose);
+
+      audioWs = new WebSocket(`${proto}//${location.host}${audioWsPath}?user_id=${userId}`);
+
+      startBtn.style.display = 'none';
+      endBtn.style.display = '';
+      controls.style.display = '';
+      setState('opening_playing'); // waits for converse:opening
+    } catch (err) {
+      console.error('[converse] startSession failed:', err);
+      setStatus('Mic error — check permissions');
+      _cleanup();
     }
-
-    const userId = userIdFn();
-    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(`${proto}//${location.host}${wsPath}?user_id=${userId}`);
-    ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ type: 'converse:start', topic_id: currentTopicId }));
-    });
-    ws.addEventListener('message', _onWsMessage);
-    ws.addEventListener('close', _onWsClose);
-
-    audioWs = new WebSocket(`${proto}//${location.host}${audioWsPath}?user_id=${userId}`);
-
-    startBtn.style.display = 'none';
-    endBtn.style.display = '';
-    controls.style.display = '';
-    setState('opening_playing'); // waits for converse:opening
   }
 
   async function endSession() {
@@ -252,11 +259,13 @@ export function initConverse(opts = {}) {
   }
 
   function _cleanup() {
+    if (currentAudio) { currentAudio.pause(); currentAudio = null; }
     if (ws) { ws.close(); ws = null; }
     if (audioWs) { audioWs.close(); audioWs = null; }
     if (vad) { vad.destroy(); vad = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
+    _stopAudioStream();
     workletNode = null;
     analyserNode = null;
     setState('idle');
@@ -271,11 +280,11 @@ export function initConverse(opts = {}) {
   function _playAudio(url, onEnded) {
     setState('playing');
     if (vad) vad.disarm();
-    const audio = new Audio(url);
-    audio.playbackRate = audioSpeed;
-    audio.addEventListener('ended', () => { if (onEnded) onEnded(); });
-    audio.addEventListener('error', () => { if (onEnded) onEnded(); });
-    audio.play().catch(() => { if (onEnded) onEnded(); });
+    currentAudio = new Audio(url);
+    currentAudio.playbackRate = audioSpeed;
+    currentAudio.addEventListener('ended', () => { currentAudio = null; if (onEnded) onEnded(); });
+    currentAudio.addEventListener('error', () => { currentAudio = null; if (onEnded) onEnded(); });
+    currentAudio.play().catch(() => { currentAudio = null; if (onEnded) onEnded(); });
   }
 
   // ── Chat bubbles ─────────────────────────────────────────────────
