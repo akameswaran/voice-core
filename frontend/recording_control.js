@@ -81,6 +81,9 @@ export class RecordingControl extends EventTarget {
             defaultChannel: 1,
             cameraDefault: false,
             wsBasePath: '/ws/live',
+            autoDetect: false,
+            autoDetectSilenceMs: 2000,
+            autoDetectOnsetMs: 150,
             ...opts,
         };
 
@@ -124,6 +127,8 @@ export class RecordingControl extends EventTarget {
         // Track last saved recording filename (for delete button)
         this._lastSavedFilename = null;
 
+        this._vad = null; // VoiceActivityDetector, created if autoDetect: true
+
         // Audio debug counter
         this._audioDbgCount = 0;
 
@@ -144,6 +149,11 @@ export class RecordingControl extends EventTarget {
     }
 
     get stream() { return this._audioStream; }
+
+    /** Re-arm VAD after a turn (e.g. after AI audio ends in converse mode). */
+    armAutoDetect() {
+        if (this._opts.autoDetect && this._vad) this._vad.arm();
+    }
 
     /** IDLE → MIC_OPEN: open mic + level meter, no server session */
     async checkLevel() {
@@ -181,6 +191,7 @@ export class RecordingControl extends EventTarget {
             this._stopLevelMeter(); // stop local meter, server frames take over
             this._lastSavedFilename = null; // clear for new session
             this._setState('recording');
+            if (this._opts.autoDetect && this._vad) this._vad.arm();
 
             // Start camera if enabled
             if (this._opts.showCamera && this._els.cameraToggle?.checked) {
@@ -203,6 +214,7 @@ export class RecordingControl extends EventTarget {
     async stop() {
         if (this._state !== 'recording') return;
 
+        if (this._vad) this._vad.disarm();
         this._disconnectMetricsWs();
         this._stopAudioStreaming();
         this._closeMic();
@@ -240,6 +252,7 @@ export class RecordingControl extends EventTarget {
 
     /** Cancel recording without saving */
     cancel() {
+        if (this._vad) this._vad.disarm();
         this._disconnectMetricsWs();
         this._stopAudioStreaming();
         this._closeMic();
@@ -367,9 +380,31 @@ export class RecordingControl extends EventTarget {
         this._analyser.fftSize = 2048;
         this._analyserBuf = new Float32Array(this._analyser.fftSize);
         this._sourceNode.connect(this._analyser);
+
+        // Create VAD if auto-detect enabled
+        if (this._opts.autoDetect && !this._vad) {
+            import('./vad.js').then(({ VoiceActivityDetector }) => {
+                this._vad = new VoiceActivityDetector(this._analyser, {
+                    silenceMs: this._opts.autoDetectSilenceMs,
+                    onsetMs: this._opts.autoDetectOnsetMs,
+                });
+                this._vad.addEventListener('silencedetected', () => {
+                    if (this._state === 'recording') this.stop();
+                });
+                this._vad.addEventListener('silenceprogress', (e) => {
+                    this._container.style.setProperty('--vc-rc-silence-pct', e.detail.pct);
+                    this._container.classList.toggle('vc-rc-silence-counting', e.detail.pct > 0);
+                });
+                // Calibrate immediately (mic is open at this point)
+                this._vad.calibrate(2000).then(floor => {
+                    console.log('[vc-rc] VAD noise floor:', floor.toFixed(1), 'dBFS threshold:', this._vad.thresholdDb.toFixed(1), 'dBFS');
+                });
+            });
+        }
     }
 
     _closeMic() {
+        if (this._vad) { this._vad.destroy(); this._vad = null; }
         this._stopAudioStreaming();
         if (this._audioWs) {
             this._audioWs.onclose = null;
