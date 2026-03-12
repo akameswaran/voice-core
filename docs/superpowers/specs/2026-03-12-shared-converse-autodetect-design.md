@@ -1,7 +1,7 @@
 # Shared Converse Component + Auto-Detect VAD — Design Spec
 
 **Date:** 2026-03-12
-**Status:** Approved
+**Status:** Draft (pending user review)
 **Repos affected:** voice-core, spanish-voice-coach, femme-voice-coach
 
 ---
@@ -11,7 +11,7 @@
 Two tightly related features:
 
 1. **`ConversationEngine`** extracted to `voice_core` as a configurable shared backend — Spanish and femme each inject their own prompt, topics, and analysis function.
-2. **Auto-detect VAD** added to `RecordingControl` as an opt-in mode — after mic check establishes a noise floor, silence detection drives turn submission automatically. Default-on for Converse, off for practice/eval.
+2. **Auto-detect VAD** added as a standalone `vad.js` utility in voice-core — used by `RecordingControl` (single-session) and `converse.js` (multi-turn) independently. After mic check establishes a noise floor, silence detection drives turn submission automatically. Default-on for Converse, off for practice/eval.
 
 ---
 
@@ -24,95 +24,122 @@ class ConversationEngine:
     def __init__(
         self,
         system_prompt: str,
-        topics: list[dict],          # [{id, label, description}]
-        llm_config: dict,            # {url, model, api_key}
+        topics: list[dict],              # [{id, label, description}]
+        llm_config: dict,                # {url, model, api_key}
         analysis_fn: Callable[[Path], Awaitable[dict]] | None = None,
         tts_fn: Callable[[str], Awaitable[Path]] | None = None,
+        analysis_ready_fn: Callable[[str, dict], None] | None = None,
         max_history: int = 40,
     ): ...
 
     async def start(self, topic_id: str) -> dict:
-        # Returns {opening_text, audio_url?}
+        # Returns {opening_text, audio_url?, turn_id}
 
-    async def process_turn(self, audio_path: Path) -> dict:
-        # Returns {transcript, response_text, audio_url?}
-        # Dispatches analysis_fn as background task; results delivered
-        # via on_analysis_ready callback when complete
+    async def process_turn(self, transcript: str, audio_path: Path) -> dict:
+        # transcript: pre-computed by WS handler (e.g. faster_whisper) — engine never transcribes
+        # audio_path: passed to analysis_fn only
+        # Returns {response_text, audio_url?, turn_id}
+        # Dispatches analysis_fn(audio_path) as background task
 
     async def end(self) -> dict:
-        # Returns {turns, duration_s}
+        # Returns {turns}
+        # duration_s is computed by the WS handler (tracks session start time)
 ```
 
 **Responsibilities:**
-- LLM call (OpenAI-compatible API, configurable url/model)
+- LLM call (OpenAI-compatible API, configurable url/model/api_key)
 - Conversation history management (rolling `max_history` non-system messages)
 - Transcript extraction from audio (via voice-core transcription)
-- Async dispatch of `analysis_fn(audio_path)` — does not block response
+- Async dispatch of `analysis_fn(audio_path)` as a background task
+- When analysis completes, calls `analysis_ready_fn(turn_id, results)` — registered at construction by the WS handler
 - Optional TTS via `tts_fn(text) → audio_path`
 
-**Not responsible for:** WebSocket transport, user storage, app-specific routing. Those stay in each app's server layer.
-
-### Analysis callback pattern
-
-`process_turn` dispatches `analysis_fn` as a background task. When results are ready, the engine calls `on_analysis_ready(turn_id, results)` — a callback the WebSocket handler registers. The handler forwards results to the client via the existing WS connection. This keeps conversation latency independent of analysis latency.
+**Not responsible for:** WebSocket transport, user storage, app-specific routing.
 
 ---
 
-## 2. Frontend: Auto-Detect VAD in `RecordingControl`
+## 2. Frontend: `voice-core/frontend/vad.js`
+
+Standalone voice activity detection utility, used independently by `RecordingControl` and `converse.js`.
+
+### API
+
+```javascript
+class VoiceActivityDetector extends EventTarget {
+  constructor(analyserNode, opts = {}) {
+    // opts: thresholdDb, silenceMs (default 2000), onsetMs (default 150)
+  }
+
+  async calibrate(durationMs = 2000)
+  // Samples ambient RMS over durationMs, sets this.noiseFloorDb
+  // threshold = noiseFloorDb + 8 dB headroom
+  // Fallback if never calibrated: -35 dBFS
+
+  arm()     // enable silence detection
+  disarm()  // suppress silence detection (e.g. during AI audio playback)
+  destroy() // stop interval, clean up
+}
+```
+
+**Events:**
+
+| Event | Detail | When |
+|-------|--------|------|
+| `voicedetected` | `{rmsDb}` | Voice onset confirmed (sustained > onsetMs) |
+| `silencedetected` | `{silenceMs}` | Silence window exceeded |
+| `silenceprogress` | `{pct: 0-100}` | Ticks during silence window (80ms interval) |
+
+**Noise floor fallback:** Threshold defaults to `-35 dBFS` if `calibrate()` was never called.
+
+**Implementation:** Runs on the existing `AnalyserNode` at 80ms ticks. No new audio graph nodes.
+
+---
+
+## 3. Frontend: Auto-Detect in `RecordingControl`
+
+`RecordingControl` uses `VoiceActivityDetector` internally when `autoDetect: true`.
 
 ### New constructor options
 
 ```javascript
 new RecordingControl(containerEl, {
-  autoDetect: false,               // default off; Converse sets true
-  autoDetectThresholdDb: null,     // null = noise_floor + 8 dB (dynamic)
-  autoDetectSilenceMs: 2000,       // 2s silence → auto-submit turn
-  autoDetectOnsetMs: 150,          // voice must be present 150ms to count
+  autoDetect: false,           // default off; Converse does not use RC
+  autoDetectSilenceMs: 2000,
+  autoDetectOnsetMs: 150,
 })
 ```
 
-### Noise floor calibration
+### Behavior when `autoDetect: true`
 
-During `checkLevel()`, when `autoDetect: true`, RecordingControl samples ambient RMS over 2 seconds and stores `this._noiseFloorDb`. Dynamic threshold = `_noiseFloorDb + 8`. This replaces any previous session's noise floor.
+- `checkLevel()` calls `vad.calibrate()` to sample noise floor
+- When recording is active, VAD is armed; `silencedetected` → calls `this.stop()`
+- New public method **`armAutoDetect()`**: re-arms VAD after a turn (for practice flows that use RC in auto-detect mode)
+- `silenceprogress` events → RC updates `--vc-rc-silence-pct` CSS custom property and adds `vc-rc-silence-counting` class for countdown bar styling
 
-If `autoDetectThresholdDb` is explicitly set, it overrides the dynamic calculation.
+### Zero overhead when `autoDetect: false`
 
-### Turn gate: `armAutoDetect()`
-
-New public method. Must be called by the app after AI audio finishes playing. Until called, silence detection is suppressed — prevents AI speaker bleed from triggering a false turn.
-
-Auto-detect state machine (when `autoDetect: true` and armed):
-```
-armed → [voice onset > 150ms] → speaking
-speaking → [silence > 2000ms] → this.stop() dispatched
-speaking → [manual stop] → stop() as normal
-```
-
-The gate resets to `unarmed` automatically when `stop()` is called.
-
-### New events
-
-| Event | Detail | When |
-|-------|--------|------|
-| `voicedetected` | `{rmsDb}` | Voice onset confirmed |
-| `silencedetected` | `{silenceMs}` | Silence timeout approaching |
-| `autodetectarmed` | — | `armAutoDetect()` called |
-
-### Visual silence countdown
-
-During the 2s silence window, RecordingControl updates a `--vc-rc-silence-pct` CSS custom property (0→100) on its container, and adds class `vc-rc-silence-counting`. Apps can style a countdown bar using this hook without coupling to internal RC state.
-
-### Implementation notes
-
-- Reuses existing `_analyser` AnalyserNode — no new audio graph nodes
-- RMS sampling runs in the existing `_levelInterval` tick (80ms)
-- All VAD logic is off when `autoDetect: false` — zero overhead for practice/eval
+No VAD instance is created. No behavior change for practice or eval.
 
 ---
 
-## 3. Frontend: Shared `converse.js`
+## 4. Frontend: Shared `converse.js`
 
 **Location:** `voice-core/frontend/converse.js`
+
+Converse manages its **own mic lifecycle** independently of `RecordingControl`. The existing Spanish implementation confirms this pattern — each turn creates a new server-side `AudioSession` while the client mic stays open for the full session. `RecordingControl` is a single-session tool; Converse is multi-turn.
+
+### Mic lifecycle in Converse
+
+```
+session start → openMic() [AudioContext + AnalyserNode + AudioWorklet]
+  turn N: startAudioStream() → user speaks → stopAudioStream() → send audio via /ws/live/audio
+  ...
+session end → closeMic()
+```
+
+`converse.js` reuses `audio_worklet.js` (already shared in voice-core/frontend/) and creates its own `VoiceActivityDetector` instance on the same `AnalyserNode`.
+
+`converse.js` uses a **single WebSocket** (`/ws/live`) for all JSON control messages (matching the existing Spanish pattern). Audio is streamed separately on `/ws/live/audio` as binary PCM — the same two-socket subset of the 3-socket pattern.
 
 ### Init API
 
@@ -123,7 +150,6 @@ initConverse({
   mountEl: document.getElementById('converse-mount'),
   topics: [{id, label}],
   analysisFields: [
-    // Rendered under each user turn as async badges
     {key: 'gender_score', label: 'Gender',    format: 'score_100'},
     {key: 'resonance',    label: 'Resonance', format: 'score_100'},
     {key: 'vocal_weight', label: 'Weight',    format: 'score_100'},
@@ -131,125 +157,135 @@ initConverse({
   wsBasePath: '/ws/live',
   audioSpeed: 0.85,
   autoDetect: true,
+  silenceMs: 2000,
+  onsetMs: 150,
+  userIdFn: () => localStorage.getItem('activeUserId'),
 })
 ```
 
 ### Turn state machine
 
 ```
-idle → [start topic] → armed
-armed → [voicedetected] → speaking
-speaking → [silencedetected / manual stop] → processing
-processing → [response received] → playing
-playing → [audio ended] → armAutoDetect() → armed
+idle
+  → [start topic] → opening_playing
+opening_playing
+  → [audio ended] → vad.arm() → armed
+armed
+  → [voicedetected] → speaking
+speaking
+  → [silencedetected / manual stop] → stopAudioStream() → send converse:turn_done → processing
+processing
+  → [converse:user_heard] → render user bubble with '--' analysis badges
+  → [converse:response + audio] → playing
+  → [converse:analysis] → update badges in-place (any time after user_heard, matched by turn_id)
+playing
+  → [audio ended] → vad.arm() → armed
 ```
-
-### Chat bubble rendering
-
-- **AI turns:** text bubble, no analysis
-- **User turns:** text bubble + analysis badge row
-  - Badges render immediately as `--` (dimmed)
-  - Update in-place when WS delivers `converse:analysis` message
-  - Format `score_100`: colored bar + numeric (0–100), color-coded green/amber/red
 
 ### Auto-detect toggle
 
-A small toggle rendered inside the component above the chat log:
+Rendered inside the component above the chat log:
 
 ```
-[●] Auto-detect  ← toggles on/off
+[●] Auto-detect
 ```
 
-- Default: on (matches `autoDetect` init option)
-- **Toggling ON:** calls `rc.checkLevel()` to force mic recheck and recalibrate noise floor before arming
-- **Toggling OFF:** disables VAD; Start/Stop buttons appear for manual control
-- Toggle state persists in `localStorage` per app key
+- Default matches `autoDetect` init option
+- **Toggle ON:** calls `vad.calibrate()` (2s sample), then arms — forces fresh noise floor
+- **Toggle OFF:** disarms VAD; manual Start/Stop buttons appear
+- State persisted in `localStorage` keyed per app (`vc_converse_autodetect_{appKey}`)
 
 ### Silence countdown bar
 
-A thin progress bar above the chat input, visible only during the 2s silence window. Uses the `--vc-rc-silence-pct` CSS hook from RecordingControl. Fades out when user speaks again.
+Thin progress bar driven by `silenceprogress` events. Fades out when voice is detected.
+
+### Chat bubble analysis badges
+
+- Render as `--` (dimmed) when `converse:user_heard` arrives
+- Update in-place when `converse:analysis` arrives
+- Format `score_100`: numeric + color bar (green ≥70, amber 40–69, red <40)
 
 ### App-specific chrome stays per-app
 
-Each app's `converse.html` owns: page layout, nav, topic selector (populated from `/api/topics`), and any domain-specific UI (Spanish dictionary panel, etc.). The shared component mounts into `#converse-mount` and owns only the chat area.
+Page layout, nav, topic selector, and domain-specific UI (Spanish dictionary etc.) stay in each app's `converse.html`. Shared component mounts into `#converse-mount`.
 
 ---
 
-## 4. App Integration
+## 5. WebSocket Protocol
 
-### Spanish voice coach (migration)
-
-**Backend:** Current `conversation.py` `ConversationEngine` class replaced by `voice_core.converse.ConversationEngine`. Spanish injects:
-- `system_prompt` — existing Spanish teacher/conversation partner prompt (unchanged)
-- `topics` — existing 13 categories
-- `analysis_fn` — existing `_analyze_converse_turn` (pronunciation scorer)
-- `tts_fn` — existing XTTS call
-
-**Frontend:** `converse.js` replaced with `initConverse()` from voice-core. `analysisFields` set to pronunciation fields. Spanish-specific UI (word confidence badges, dictionary tooltips, cheat box) stays in a thin `spanish/frontend/converse-ext.js` that extends the shared component via DOM manipulation after mount.
-
-**Risk:** Spanish converse.js is 720 lines and currently works. Migration must be done carefully with regression testing against the existing press-to-talk flow before enabling auto-detect.
-
-### Femme voice coach (new feature)
-
-**Backend:** New `src/femme_coach/server/routes_converse.py`. `ConversationEngine` configured with:
-- `system_prompt` — friendly conversationalist, no coaching persona, natural chat
-- `topics` — initial set: daily life, work, social situations, hobbies, relationships
-- `analysis_fn` — calls `femme_coach.scoring.score()` on the saved audio, returns `{gender_score, resonance, vocal_weight}`
-- `tts_fn` — reuses existing Kokoro TTS infrastructure
-
-**Frontend:** New `femme/frontend/converse.html` with `initConverse()`, `analysisFields` = gender/resonance/weight.
-
-**Nav:** Add "Converse" link to femme nav alongside Practice / Review.
-
----
-
-## 5. WebSocket Protocol (shared)
-
-New message types added to the existing `/ws/live` protocol (both apps):
+The existing `/ws/live` socket is **already bidirectional** in Spanish — confirmed in `spanish_coach/server.py` where both server-push metric frames and client JSON messages (`converse:start`, `converse:turn_done`) are handled on the same socket. The spec follows this established pattern.
 
 | Direction | Type | Payload |
 |-----------|------|---------|
 | client→server | `converse:start` | `{topic_id}` |
 | server→client | `converse:opening` | `{text, audio_url?, turn_id}` |
-| client→server | `converse:turn_done` | — (sent after auto-silence or manual stop) |
+| client→server | `converse:turn_done` | — |
 | server→client | `converse:user_heard` | `{transcript, turn_id}` |
 | server→client | `converse:response` | `{text, audio_url?, turn_id}` |
 | server→client | `converse:analysis` | `{turn_id, results: dict}` |
 | client→server | `converse:end` | — |
 | server→client | `converse:ended` | `{turns, duration_s}` |
 
-`converse:analysis` is sent asynchronously after `converse:user_heard` — no ordering guarantee relative to `converse:response`. The client matches by `turn_id`.
+`converse:analysis` is async — no ordering guarantee vs. `converse:response`. Client matches by `turn_id`.
 
 ---
 
-## 6. Implementation Phases
+## 6. App Integration
 
-### Phase 1 — VAD in RecordingControl (voice-core)
-- Noise floor calibration in `checkLevel()`
-- Silence detection + onset gating
-- `armAutoDetect()` method
+### Spanish voice coach (Phase 3 — migration)
+
+**Backend:** Current `ConversationEngine` in `conversation.py` replaced by `voice_core.converse.ConversationEngine`.
+
+**Async migration required:** Spanish's existing LLM calls use `httpx.Client` (synchronous). The new engine is fully async (`httpx.AsyncClient`). Phase 3 includes porting the LLM call pattern and updating the WS handler. This is non-trivial porting, not a drop-in replacement.
+
+Spanish injects: existing system prompt, 13 topics, async pronunciation scorer as `analysis_fn`, XTTS as `tts_fn`, WS send closure as `analysis_ready_fn`.
+
+**Frontend:** Spanish `converse.js` migrated to use `initConverse()`. Spanish-specific UI (word confidence badges, dictionary tooltips, cheat box) stays in `spanish/frontend/converse-ext.js` layered on top after mount.
+
+**Protocol rename:** Spanish currently uses `converse:pronunciation` for async analysis results. Phase 3 renames this to `converse:analysis` (the shared protocol). Frontend and backend must be updated together.
+
+**Implementation note:** The `analysis_ready_fn` closure captures the active WebSocket. Guard against WS disconnect between turn submission and analysis completion — check `ws.client_state` before sending.
+
+**Risk:** Spanish converse works today. Validate Phase 2 before touching it.
+
+### Femme voice coach (Phase 2 — greenfield)
+
+**Backend:** New `routes_converse.py`. `ConversationEngine` with:
+- `system_prompt` — friendly conversationalist, no coaching persona
+- `topics` — daily life, work, social situations, hobbies, relationships
+- `analysis_fn` — `femme_coach.scoring.score()` → `{gender_score, resonance, vocal_weight}`
+- `tts_fn` — existing Kokoro infrastructure
+- `analysis_ready_fn` — WS send closure
+
+**Frontend:** New `femme/frontend/converse.html`. Nav updated: Practice / Converse / Review.
+
+---
+
+## 7. Implementation Phases
+
+### Phase 1 — `vad.js` + RecordingControl auto-detect (voice-core only)
+- `VoiceActivityDetector` class (calibrate, arm, disarm, events)
+- Wire into RecordingControl when `autoDetect: true`
 - CSS countdown hook
-- Auto-detect toggle component
-- No app changes needed — ships as voice-core update
+- No app changes required
 
-### Phase 2 — Femme Converse (new feature)
+### Phase 2 — Femme Converse (greenfield, lower risk)
 - `voice_core/converse.py` ConversationEngine
 - `voice-core/frontend/converse.js` shared component
 - Femme `routes_converse.py` + WS handler
 - Femme `converse.html`
 
-### Phase 3 — Spanish migration
-- Replace Spanish `conversation.py` with shared ConversationEngine
-- Migrate Spanish `converse.js` to use `initConverse()`
+### Phase 3 — Spanish migration (after Phase 2 validated)
+- Port Spanish ConversationEngine to async
+- Replace Spanish WS handler with shared ConversationEngine
+- Migrate Spanish `converse.js` to `initConverse()` + `converse-ext.js`
 - Regression test press-to-talk + auto-detect paths
-
-Femme is greenfield (Phase 2) so it's lower risk than Spanish migration (Phase 3). Do Phase 2 first to validate the shared component, then migrate Spanish.
 
 ---
 
-## 7. Out of Scope
+## 8. Out of Scope
 
-- ML-based VAD (Silero, WebRTC VAD) — RMS + noise floor is sufficient for v1
+- ML-based VAD (Silero, WebRTC VAD) — calibrated RMS sufficient for v1
 - Multi-language support in femme converse
-- Pronunciation word-level analysis for femme (only session-level acoustic scores)
+- Pronunciation word-level analysis for femme (session-level only)
 - Singing converse
