@@ -673,3 +673,30 @@ body.mode-recording .rec-indicator.active { display: flex; }
 .vc-review-recordings { margin-bottom: 24px; }
 
 .vc-review-rec-card { cursor: default; }
+
+/* ── Converse Component ────────────────────────────────────── */
+.vc-converse { display: flex; flex-direction: column; gap: 10px; }
+.vc-converse-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.vc-autodetect-toggle { display: flex; align-items: center; gap: 6px; font-size: 0.9rem;
+  color: var(--text-dim); cursor: pointer; margin-left: auto; }
+.vc-autodetect-toggle input { accent-color: var(--accent); }
+.vc-silence-bar-wrap { height: 3px; background: var(--border); border-radius: 2px; }
+.vc-silence-bar { height: 100%; background: var(--accent); border-radius: 2px;
+  transition: width 0.08s linear; }
+.vc-chat-log { display: flex; flex-direction: column; gap: 8px;
+  max-height: 400px; overflow-y: auto; padding: 4px 0; }
+.vc-bubble { max-width: 80%; padding: 10px 14px; border-radius: 12px;
+  font-size: 0.95rem; line-height: 1.5; }
+.vc-bubble-assistant { background: var(--surface-2); align-self: flex-start; }
+.vc-bubble-user { background: rgba(232,125,62,0.12); border: 1px solid rgba(232,125,62,0.3);
+  align-self: flex-end; }
+.vc-analysis-badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.vc-badge { font-size: 0.8rem; padding: 2px 8px; border-radius: 10px;
+  border: 1px solid var(--border); display: flex; gap: 4px; }
+.vc-badge-pending { color: var(--text-dim); }
+.vc-badge-good { border-color: var(--fem); color: var(--fem); }
+.vc-badge-mid { border-color: #f0a500; color: #f0a500; }
+.vc-badge-low { border-color: var(--masc); color: var(--masc); }
+.vc-system-msg { font-size: 0.85rem; text-align: center; padding: 4px 0; }
+.vc-converse-controls { display: flex; align-items: center; gap: 10px; }
+.vc-converse-status { font-size: 0.9rem; }
