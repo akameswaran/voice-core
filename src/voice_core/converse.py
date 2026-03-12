@@ -15,10 +15,11 @@ The engine owns: LLM calls, history management, async analysis dispatch, TTS.
 from __future__ import annotations
 
 import asyncio
-import json
 import uuid
 from pathlib import Path
 from typing import Awaitable, Callable
+
+import httpx
 
 
 class ConversationEngine:
@@ -41,6 +42,7 @@ class ConversationEngine:
         self._max_history = max_history
         self._history: list[dict] = []
         self._turn_count: int = 0
+        self._background_tasks: set[asyncio.Task] = set()
 
     async def start(self, topic_id: str) -> dict:
         """Begin a conversation on the given topic. Returns opening message."""
@@ -67,12 +69,12 @@ class ConversationEngine:
     async def process_turn(self, transcript: str, audio_path: Path) -> dict:
         """Process a user turn. transcript is pre-computed by the WS handler."""
         self._history.append({"role": "user", "content": transcript})
+        self._trim_history()  # trim before sending to LLM
 
         response_text = await self._llm_call(None)  # None = use history as-is
         turn_id = str(uuid.uuid4())
         self._turn_count += 1
         self._history.append({"role": "assistant", "content": response_text})
-        self._trim_history()
 
         result: dict = {"response_text": response_text, "turn_id": turn_id}
         if self._tts_fn:
@@ -81,9 +83,13 @@ class ConversationEngine:
 
         # Dispatch analysis as background task
         if self._analysis_fn and self._analysis_ready_fn:
-            asyncio.create_task(
-                self._run_analysis(turn_id, audio_path)
+            _afn = self._analysis_fn
+            _rfn = self._analysis_ready_fn
+            task = asyncio.create_task(
+                self._run_analysis(turn_id, audio_path, _afn, _rfn)
             )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
 
         return result
 
@@ -94,17 +100,21 @@ class ConversationEngine:
         self._turn_count = 0
         return {"turns": turns}
 
-    async def _run_analysis(self, turn_id: str, audio_path: Path) -> None:
+    async def _run_analysis(
+        self,
+        turn_id: str,
+        audio_path: Path,
+        analysis_fn: Callable[[Path], Awaitable[dict]],
+        analysis_ready_fn: Callable[[str, dict], None],
+    ) -> None:
         try:
-            results = await self._analysis_fn(audio_path)
-            self._analysis_ready_fn(turn_id, results)
+            results = await analysis_fn(audio_path)
+            analysis_ready_fn(turn_id, results)
         except Exception as e:
             print(f"[converse] analysis failed for turn {turn_id}: {e}")
 
     async def _llm_call(self, user_message: str | None) -> str:
         """Call the LLM. If user_message is not None, it's appended to history first."""
-        import httpx
-
         messages = list(self._history)
         if user_message is not None:
             messages.append({"role": "user", "content": user_message})
@@ -118,7 +128,7 @@ class ConversationEngine:
         url = self._llm_config["url"].rstrip("/") + "/chat/completions"
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, content=json.dumps(payload), headers=headers)
+            resp = await client.post(url, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()
 

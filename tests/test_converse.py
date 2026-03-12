@@ -187,8 +187,9 @@ class TestConversationEngineProcessTurn:
             audio = tmp_path / f"t{i}.wav"
             audio.write_bytes(b"fake")
             await eng.process_turn(f"Turn {i}", audio)
-        # Should not exceed max_history + 1 (system prompt)
-        assert len(eng._history) <= 7  # 1 system + max_history
+        # Trim runs before LLM call (after user msg appended), then assistant is appended.
+        # So max = 1 system + max_history non-system (trimmed) + 1 assistant just appended = max_history + 2
+        assert len(eng._history) <= 8  # 1 system + max_history non-system + 1 assistant
 
 
 class TestConversationEngineEnd:
