@@ -303,14 +303,15 @@ class TestAccumulatedMeans:
         assert abs(means["delta_f_hz"] - 110.0) < 0.1
 
     def test_accumulated_means_f4_as_delta_f_proxy(self):
-        """Test that F4 is used as proxy for delta_f when delta_f not present."""
+        """Test that delta_f is only used when explicitly provided (F4 is not a proxy)."""
         acc = VowelAccumulator()
 
+        # Without delta_f, it should be 0.0
         acc.add("AE", 0.0, {"f1": 700, "f2": 1500, "f4": 3500})
         acc.add("AE", 0.02, {"f1": 700, "f2": 1500, "f4": 3600})
 
         means = acc.get_accumulated_means()
-        assert abs(means["delta_f_hz"] - 3550.0) < 0.1
+        assert abs(means["delta_f_hz"]) < 0.01  # Should be 0.0 when delta_f not provided
 
     def test_accumulated_means_h1_h2(self):
         """Test H1-H2 mean calculation."""
@@ -481,4 +482,6 @@ class TestIntegration:
         means = acc.get_accumulated_means()
         assert 700 < means["f1_mean"] < 850
         assert 1500 < means["f2_mean"] < 1700
-        assert 3500 < means["delta_f_hz"] < 3700
+        # delta_f is only calculated when explicitly present in features
+        # (F4 is not used as a proxy). Without delta_f key, should be 0.0
+        assert abs(means["delta_f_hz"]) < 0.01

@@ -42,9 +42,8 @@ class VowelAccumulator:
         self._frames.append((ts, vowel, features))
 
         # Expire frames older than window_size_s
-        if self._frames:
-            cutoff_ts = ts - self.window_size_s
-            self._frames = [(t, v, f) for t, v, f in self._frames if t >= cutoff_ts]
+        cutoff_ts = ts - self.window_size_s
+        self._frames = [(t, v, f) for t, v, f in self._frames if t >= cutoff_ts]
 
     def get_f4_scoring_stats(self) -> dict:
         """Return per-vowel stats for monophthongs only (for resonance score input).
@@ -126,13 +125,13 @@ class VowelAccumulator:
             Confidence score in [0, 1].
         """
         # Count monophthong frames
-        mono_frames = sum(1 for ts, vowel, features in self._frames
+        mono_frames = sum(1 for _, vowel, _ in self._frames
                          if vowel in MONOPHTHONG_VOWELS)
         frame_conf = min(1.0, mono_frames / 30.0)
 
         # Count monophthong categories with 3+ frames
         vowel_frames = defaultdict(int)
-        for ts, vowel, features in self._frames:
+        for _, vowel, _ in self._frames:
             if vowel in MONOPHTHONG_VOWELS:
                 vowel_frames[vowel] += 1
 
@@ -184,11 +183,11 @@ class VowelAccumulator:
         h1_h2_vals = []
 
         for ts, vowel, features in self._frames:
-            # delta_f: use actual delta_f if present, otherwise use F4 as proxy
+            # delta_f: expected to be populated by live.py's formant worker (Task: vowel classifier hook).
+            # Do NOT use F4 as a proxy—F4 is a raw formant (~3500 Hz) while delta_f is a derived
+            # vocal tract metric (~1100-1400 Hz), and substituting one would produce wrong gesture values.
             if "delta_f" in features:
                 delta_f_vals.append(features["delta_f"])
-            elif "f4" in features:
-                delta_f_vals.append(features["f4"])
 
             if "f1" in features:
                 f1_vals.append(features["f1"])
@@ -211,7 +210,7 @@ class VowelAccumulator:
             List of F0 values in Hz (empty if no F0 data).
         """
         f0_vals = []
-        for ts, vowel, features in self._frames:
+        for _, _, features in self._frames:
             if "f0" in features:
                 f0_vals.append(features["f0"])
         return f0_vals
@@ -223,6 +222,6 @@ class VowelAccumulator:
             Dict mapping vowel label to frame count.
         """
         counts = defaultdict(int)
-        for ts, vowel, features in self._frames:
+        for _, vowel, _ in self._frames:
             counts[vowel] += 1
         return dict(counts)
