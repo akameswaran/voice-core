@@ -233,6 +233,14 @@ export class ZoneGauge {
   setExpanderContent(html) {
     if (this.expanderBody) this.expanderBody.innerHTML = html;
   }
+
+  clear() {
+    this.valueEl.textContent = '--';
+    this.zoneEl.className = 'vc-zone-badge';
+    this.zoneEl.textContent = '--';
+    this.fillEl.style.width = '0%';
+    this.fillEl.style.background = '';
+  }
 }
 
 
@@ -269,6 +277,13 @@ export class GestureBars {
     bars.forEach(b => {
       this.barEls[b.id] = containerEl.querySelector(`[data-bar="${b.id}"]`);
     });
+  }
+
+  clear() {
+    for (const el of Object.values(this.barEls)) {
+      el.style.width = '0%';
+      el.style.background = '#333336';
+    }
   }
 
   /**
@@ -349,6 +364,12 @@ export class StabilityRing {
     this.fillArc = fillArc;
     this.circumference = circumference;
     this.lastZone = ''; // track last zone to avoid unnecessary color updates
+  }
+
+  clear() {
+    this.fillArc.setAttribute('stroke-dashoffset', this.circumference);
+    this.svg.style.opacity = '0';
+    this.lastZone = '';
   }
 
   /**
