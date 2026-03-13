@@ -132,7 +132,11 @@ class ConversationEngine:
             resp.raise_for_status()
             data = resp.json()
 
-        return data["choices"][0]["message"]["content"].strip()
+        content = data["choices"][0]["message"]["content"].strip()
+        # Strip Qwen3-style <think>...</think> reasoning blocks
+        import re
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        return content
 
     def _trim_history(self) -> None:
         """Keep system prompt + last max_history non-system messages."""
