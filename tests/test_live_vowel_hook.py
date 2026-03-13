@@ -6,9 +6,6 @@ Since the _formant_worker thread doesn't run in unit tests, we verify:
 2. The gate conditions are correctly implemented
 """
 
-import pytest
-from unittest.mock import patch, MagicMock
-
 from voice_core.live import LiveAnalyzer
 from voice_core.analyze import _classify_vowel
 
