@@ -132,7 +132,12 @@ export function initConverse(opts = {}) {
       ws.addEventListener('message', _onWsMessage);
       ws.addEventListener('close', _onWsClose);
 
-      audioWs = new WebSocket(`${proto}//${location.host}${audioWsPath}?user_id=${userId}`);
+      // Reuse ws when both paths are the same (single-socket server like femme)
+      if (audioWsPath === wsPath) {
+        audioWs = ws;
+      } else {
+        audioWs = new WebSocket(`${proto}//${location.host}${audioWsPath}?user_id=${userId}`);
+      }
 
       startBtn.style.display = 'none';
       endBtn.style.display = '';
@@ -260,8 +265,9 @@ export function initConverse(opts = {}) {
 
   function _cleanup() {
     if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+    if (audioWs && audioWs !== ws) { audioWs.close(); }
+    audioWs = null;
     if (ws) { ws.close(); ws = null; }
-    if (audioWs) { audioWs.close(); audioWs = null; }
     if (vad) { vad.destroy(); vad = null; }
     if (audioCtx) { audioCtx.close(); audioCtx = null; }
     if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
