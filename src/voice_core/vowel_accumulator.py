@@ -54,7 +54,7 @@ class VowelAccumulator:
         """
         vowel_frames = defaultdict(list)
 
-        for ts, vowel, features in self._frames:
+        for _, vowel, features in self._frames:
             if vowel in MONOPHTHONG_VOWELS:
                 vowel_frames[vowel].append(features)
 
@@ -89,7 +89,7 @@ class VowelAccumulator:
         """
         vowel_frames = defaultdict(list)
 
-        for ts, vowel, features in self._frames:
+        for _, vowel, features in self._frames:
             vowel_frames[vowel].append(features)
 
         result = {}
@@ -151,7 +151,7 @@ class VowelAccumulator:
         stats = self.get_f4_scoring_stats()
 
         cvs = []
-        for vowel, stat_dict in stats.items():
+        for _, stat_dict in stats.items():
             if stat_dict["n_frames"] >= 5:
                 f4_mean = stat_dict["f4_mean"]
                 f4_sd = stat_dict["f4_sd"]
@@ -182,7 +182,7 @@ class VowelAccumulator:
         f2_vals = []
         h1_h2_vals = []
 
-        for ts, vowel, features in self._frames:
+        for _, _, features in self._frames:
             # delta_f: expected to be populated by live.py's formant worker (Task: vowel classifier hook).
             # Do NOT use F4 as a proxy—F4 is a raw formant (~3500 Hz) while delta_f is a derived
             # vocal tract metric (~1100-1400 Hz), and substituting one would produce wrong gesture values.
