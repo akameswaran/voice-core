@@ -1,6 +1,5 @@
 """Tests for falsetto slip detector in safety_monitor.py."""
 
-import pytest
 from voice_core.safety_monitor import SafetyMonitor
 
 
