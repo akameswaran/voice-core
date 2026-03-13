@@ -1,6 +1,5 @@
 """Tests for DisplayPipeline: bridges raw acoustic frames to WebSocket display data."""
 
-import pytest
 from voice_core.display_pipeline import DisplayPipeline, SCORE_SUPPRESSING_WARNINGS
 
 

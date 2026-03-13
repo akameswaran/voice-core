@@ -5,7 +5,6 @@ gesture bars, zone badges, stability rings, trend arrows, and partial scores.
 Called between get_frame() and WebSocket serialization.
 """
 
-import math
 import statistics
 from typing import Callable
 
