@@ -179,6 +179,10 @@ class SafetyMonitor:
         # Active warnings (cleared when condition resolves)
         self._active_warnings: dict[str, SafetyWarning] = {}
 
+        # Falsetto detector state
+        self._prev_f0: Optional[float] = None
+        self._prev_f4: Optional[float] = None
+
     @property
     def session_duration_minutes(self) -> float:
         return (time.time() - self.session_start) / 60.0
@@ -247,6 +251,19 @@ class SafetyMonitor:
             w = self._check_f0_interference(f0, f1)
             if w:
                 warnings.append(w)
+
+        # --- Check 6: Falsetto slip detector ---
+        f4 = metrics.get("f4_hz", None)
+        if f4 is not None and f0 > 0:
+            w = self._check_falsetto_slip(f0, f4)
+            if w:
+                warnings.append(w)
+
+        # Update previous frame state
+        if f0 > 0:
+            self._prev_f0 = f0
+        if f4 is not None:
+            self._prev_f4 = f4
 
         return warnings
 
@@ -408,6 +425,31 @@ class SafetyMonitor:
                 )
         return None
 
+    def _check_falsetto_slip(self, f0: float, f4: float
+                             ) -> Optional[SafetyWarning]:
+        """Detect falsetto slip: sudden upward F0 jump with concurrent F4 drop."""
+        if self._rate_limited("falsetto_slip"):
+            return None
+
+        # Need previous frame data to detect sudden jumps
+        if self._prev_f0 is None or self._prev_f4 is None:
+            return None
+
+        f0_jump = f0 - self._prev_f0
+        f4_drop = self._prev_f4 - f4
+
+        # Both conditions must be met: F0 up >100 Hz AND F4 down >200 Hz
+        if f0_jump > 100 and f4_drop > 200:
+            return self._emit(
+                "warning", "falsetto_slip",
+                "Sudden falsetto shift detected. Your pitch jumped while your "
+                "resonance dropped — this suggests unintended register shift. "
+                "Try centering your voice and maintaining steady breath support.",
+                dimension="health"
+            )
+
+        return None
+
     def get_status(self) -> dict:
         """Return current safety status summary."""
         return {
@@ -431,3 +473,5 @@ class SafetyMonitor:
         self._shimmer_history.clear()
         self._last_warning_time.clear()
         self._active_warnings.clear()
+        self._prev_f0 = None
+        self._prev_f4 = None
