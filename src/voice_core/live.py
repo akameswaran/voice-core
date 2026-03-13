@@ -162,6 +162,8 @@ class LiveAnalyzer:
             "bw3_hz": 0.0,
             # F1/ΔF ratio (resonance balance indicator)
             "f1_delta_f_ratio": 0.0,
+            # Vowel classification
+            "vowel": None,
             # Safety monitor metrics
             "hnr_db": 0.0,
             "jitter_pct": 0.0,
@@ -554,7 +556,7 @@ class LiveAnalyzer:
         """Thread: Parselmouth formant extraction + delta-F."""
         import parselmouth
         from parselmouth.praat import call
-        from voice_core.analyze import _compute_delta_f
+        from voice_core.analyze import _compute_delta_f, _classify_vowel
 
         while self._running:
             try:
@@ -602,6 +604,17 @@ class LiveAnalyzer:
                 else:
                     zone = ""
 
+                # Vowel classification: read f0 and rms_db from latest under lock
+                with self._lock:
+                    f0 = self.latest["f0_hz"]
+                    rms_db = self.latest["rms_db"]
+
+                # Apply vowel gate conditions
+                if f0 > 80 and rms_db > -35 and f1 > 200 and f2 > 500 and bw1 < 200:
+                    vowel = _classify_vowel(f1, f2)
+                else:
+                    vowel = None
+
                 with self._lock:
                     self.latest["f1_hz"] = f1
                     self.latest["f2_hz"] = f2
@@ -613,6 +626,7 @@ class LiveAnalyzer:
                     self.latest["delta_f_hz"] = delta_f
                     self.latest["delta_f_zone"] = zone
                     self.latest["f1_delta_f_ratio"] = f1_delta_f_ratio
+                    self.latest["vowel"] = vowel
 
             except Exception:
                 pass
