@@ -142,6 +142,7 @@ export function initConverse(opts = {}) {
       startBtn.style.display = 'none';
       endBtn.style.display = '';
       controls.style.display = '';
+      setStatus('Starting conversation...');
       setState('opening_playing'); // waits for converse:opening
     } catch (err) {
       console.error('[converse] startSession failed:', err);
@@ -159,10 +160,10 @@ export function initConverse(opts = {}) {
 
   function startTurn() {
     if (!audioWs || audioWs.readyState !== WebSocket.OPEN) return;
-    if (vad && autoDetectEnabled) vad.arm();
+    if (vad && !autoDetectEnabled) vad.arm(); // manual mode: arm VAD to detect silence
     setState('speaking');
     speakBtn.style.display = 'none';
-    stopBtn.style.display = '';
+    stopBtn.style.display = ''; // always show Done so user can stop manually
     _startAudioStream();
   }
 
@@ -175,7 +176,7 @@ export function initConverse(opts = {}) {
     setState('processing');
     speakBtn.style.display = '';
     stopBtn.style.display = 'none';
-    setStatus('Listening...');
+    setStatus('Transcribing...');
   }
 
   // ── WebSocket message handler ─────────────────────────────────────
@@ -184,15 +185,17 @@ export function initConverse(opts = {}) {
     try { msg = JSON.parse(e.data); } catch { return; }
 
     if (msg.type === 'converse:opening') {
+      setStatus('');
       _addBubble('assistant', msg.text);
       if (msg.audio_url) _playAudio(msg.audio_url, () => _armForTurn());
       else _armForTurn();
 
     } else if (msg.type === 'converse:user_heard') {
-      setStatus('');
+      setStatus('Thinking...');
       _addBubble('user', msg.transcript, msg.turn_id, analysisFields);
 
     } else if (msg.type === 'converse:response') {
+      setStatus('');
       _addBubble('assistant', msg.text);
       if (msg.audio_url) _playAudio(msg.audio_url, () => _armForTurn());
       else _armForTurn();
@@ -247,6 +250,7 @@ export function initConverse(opts = {}) {
     vad.addEventListener('voicedetected', () => {
       silenceBarWrap.style.display = 'none';
       silenceBar.style.width = '0';
+      if (state === 'armed') startTurn();
     });
   }
 
@@ -351,9 +355,10 @@ export function initConverse(opts = {}) {
   function setStatus(t) { statusEl.textContent = t; }
 
   function _updateManualControls() {
-    const showManual = !autoDetectEnabled && (state === 'armed' || state === 'speaking');
-    speakBtn.style.display = (showManual && state === 'armed') ? '' : 'none';
-    stopBtn.style.display = (showManual && state === 'speaking') ? '' : 'none';
+    // Speak button: only in manual mode when armed
+    speakBtn.style.display = (!autoDetectEnabled && state === 'armed') ? '' : 'none';
+    // Done button: always visible when speaking (auto-detect fallback + manual mode)
+    stopBtn.style.display = (state === 'speaking') ? '' : 'none';
   }
 
   function _esc(s) {
