@@ -15,7 +15,37 @@ export function initNav({ appName = 'Voice Coach', links = [], showUserPicker = 
   if (!document.getElementById('vc-nav-style')) {
     const style = document.createElement('style');
     style.id = 'vc-nav-style';
-    style.textContent = '.vc-nav-switch-link { font-size: 0.8rem; color: var(--text-dim, #888); text-decoration: none; margin-left: auto; }';
+    style.textContent = `
+      .vc-nav-user {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        text-decoration: none;
+        padding: 6px 12px;
+        border-radius: 6px;
+        transition: background 0.15s;
+      }
+      .vc-nav-user:hover { background: var(--surface-2, #1e1e21); text-decoration: none; }
+      .vc-nav-user-initial {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: var(--accent, #e87d3e);
+        color: #111;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.8rem;
+        font-weight: 700;
+        flex-shrink: 0;
+      }
+      .vc-nav-user-name {
+        font-size: 0.95rem;
+        font-weight: 600;
+        color: var(--text, #e8e6e1);
+      }
+    `;
     document.head.appendChild(style);
   }
 
@@ -48,14 +78,44 @@ export function initNav({ appName = 'Voice Coach', links = [], showUserPicker = 
 
   nav.appendChild(linksDiv);
 
-  // -- Switch user link (pushes to right via margin-left: auto in CSS) --
-  const switchLink = document.createElement('a');
-  switchLink.href = '/?switch=1';
-  switchLink.className = 'vc-nav-switch-link';
-  switchLink.textContent = '⇄ Switch user';
-  nav.appendChild(switchLink);
+  // -- User display (click to switch) --
+  const userLink = document.createElement('a');
+  userLink.href = '/?switch=1';
+  userLink.className = 'vc-nav-user';
+
+  const initial = document.createElement('span');
+  initial.className = 'vc-nav-user-initial';
+  initial.textContent = '?';
+
+  const nameSpan = document.createElement('span');
+  nameSpan.className = 'vc-nav-user-name';
+  nameSpan.textContent = '…';
+
+  userLink.appendChild(initial);
+  userLink.appendChild(nameSpan);
+  nav.appendChild(userLink);
 
   // -- Mount --
   const target = mountTo || document.body;
   target.insertBefore(nav, target.firstChild);
+
+  // -- Async: fill in user name --
+  const userId = localStorage.getItem('activeUserId');
+  if (userId) {
+    fetch('/api/users')
+      .then(r => r.json())
+      .then(users => {
+        const user = users.find(u => u.id === userId);
+        if (user) {
+          initial.textContent = user.name[0].toUpperCase();
+          nameSpan.textContent = user.name;
+        }
+      })
+      .catch(() => {
+        nameSpan.textContent = 'Switch user';
+        initial.textContent = '?';
+      });
+  } else {
+    nameSpan.textContent = 'Select user';
+  }
 }
