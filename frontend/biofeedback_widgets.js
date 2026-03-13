@@ -286,3 +286,101 @@ export class GestureBars {
     }
   }
 }
+
+
+// ── StabilityRing ───────────────────────────────────────────
+// SVG ring with stroke-dasharray fill driven by stability_pct.
+// Confidence controls visibility: <0.2 hidden, 0.2-0.5 outline only, >=0.5 filled.
+export class StabilityRing {
+  /**
+   * @param {HTMLElement} containerEl - Container for SVG ring
+   */
+  constructor(containerEl) {
+    this.container = containerEl;
+
+    // Zone colors from theme (same as ZoneGauge uses)
+    this.zoneColors = {
+      fem: '#4ade80',   // green
+      andro: '#facc15', // yellow
+      masc: '#f87171',  // red
+    };
+
+    // Build SVG ring
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', '0 0 120 120');
+    svg.setAttribute('class', 'vc-stability-ring-svg');
+    svg.style.width = '100%';
+    svg.style.height = '100%';
+    svg.style.maxWidth = '120px';
+
+    // Background track (full circle outline)
+    const bgCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    bgCircle.setAttribute('cx', '60');
+    bgCircle.setAttribute('cy', '60');
+    bgCircle.setAttribute('r', '50');
+    bgCircle.setAttribute('fill', 'none');
+    bgCircle.setAttribute('stroke', '#e5e7eb');
+    bgCircle.setAttribute('stroke-width', '8');
+    svg.appendChild(bgCircle);
+
+    // Fill arc (driven by stability_pct via stroke-dasharray/offset)
+    const fillArc = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    fillArc.setAttribute('cx', '60');
+    fillArc.setAttribute('cy', '60');
+    fillArc.setAttribute('r', '50');
+    fillArc.setAttribute('fill', 'none');
+    fillArc.setAttribute('stroke', '#4ade80'); // default to fem
+    fillArc.setAttribute('stroke-width', '8');
+    fillArc.setAttribute('stroke-linecap', 'round');
+
+    // circumference = 2 * π * r = 2 * π * 50 ≈ 314.16
+    const circumference = 2 * Math.PI * 50;
+    fillArc.setAttribute('stroke-dasharray', circumference);
+    fillArc.setAttribute('stroke-dashoffset', circumference); // start at 0 fill
+
+    // Rotate to start from top
+    fillArc.setAttribute('transform', 'rotate(-90 60 60)');
+
+    svg.appendChild(fillArc);
+
+    containerEl.appendChild(svg);
+
+    this.svg = svg;
+    this.fillArc = fillArc;
+    this.circumference = circumference;
+    this.lastZone = ''; // track last zone to avoid unnecessary color updates
+  }
+
+  /**
+   * @param {number|null} stability_pct - 0-100, or null for outline-only
+   * @param {string} zone - "masc" | "andro" | "fem" | ""
+   * @param {number} confidence - 0-1
+   */
+  update(stability_pct, zone, confidence) {
+    // Hide entirely if confidence too low
+    if (confidence < 0.2) {
+      this.svg.style.opacity = '0';
+      return;
+    }
+
+    this.svg.style.opacity = '1';
+
+    // Update color if zone changed
+    if (zone !== this.lastZone) {
+      const color = this.zoneColors[zone] || '#4ade80';
+      this.fillArc.setAttribute('stroke', color);
+      this.lastZone = zone;
+    }
+
+    // Determine fill based on confidence and stability
+    if (confidence < 0.5 || stability_pct === null) {
+      // Warming up or no value — show outline only
+      this.fillArc.setAttribute('stroke-dashoffset', this.circumference);
+    } else {
+      // confidence >= 0.5 — fill based on stability_pct
+      const pct = Math.max(0, Math.min(100, stability_pct));
+      const offset = this.circumference * (1 - pct / 100);
+      this.fillArc.setAttribute('stroke-dashoffset', offset);
+    }
+  }
+}

@@ -26,7 +26,7 @@
  *   saved        {filename}
  */
 
-import { wsUrl } from './user_api.js';
+import { wsUrl, apiFetch } from './user_api.js';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -215,7 +215,7 @@ export class RecordingControl extends EventTarget {
             const tag = this._opts.activityTagFn?.() || '';
             const params = new URLSearchParams();
             if (tag) params.set('activity', tag);
-            const res = await fetch(`/api/live/save?${params}`, { method: 'POST' });
+            const res = await apiFetch(`/api/live/save?${params}`, { method: 'POST' });
             const data = await res.json();
             if (data.recording) {
                 this._lastSavedFilename = data.recording;
@@ -231,7 +231,7 @@ export class RecordingControl extends EventTarget {
         await this._stopCamera();
 
         try {
-            await fetch('/api/live/stop', { method: 'POST' });
+            await apiFetch('/api/live/stop', { method: 'POST' });
         } catch (e) { /* ignore */ }
 
         this._currentFrame = null;
@@ -508,7 +508,7 @@ export class RecordingControl extends EventTarget {
 
         if (source === 'browser') {
             const sr = this._audioCtx.sampleRate;
-            const res = await fetch(`/api/live/start-browser?sr=${sr}`, {
+            const res = await apiFetch(`/api/live/start-browser?sr=${sr}`, {
                 method: 'POST',
             });
             const data = await res.json();
@@ -530,7 +530,7 @@ export class RecordingControl extends EventTarget {
             const deviceId = this._els.deviceSelect?.value;
             const params = new URLSearchParams();
             if (deviceId) params.set('device', deviceId);
-            const res = await fetch('/api/live/start?' + params, {
+            const res = await apiFetch('/api/live/start?' + params, {
                 method: 'POST',
             });
             const data = await res.json();
@@ -712,7 +712,7 @@ export class RecordingControl extends EventTarget {
         const form = new FormData();
         form.append('video', blob, videoName);
         try {
-            await fetch('/api/live/save-video', { method: 'POST', body: form });
+            await apiFetch('/api/live/save-video', { method: 'POST', body: form });
             console.log('[vc-rc] Video saved:', videoName);
         } catch (e) {
             console.warn('[vc-rc] Video upload failed:', e);
@@ -738,7 +738,7 @@ export class RecordingControl extends EventTarget {
         // Server devices
         if (this._opts.showSourceSelect || this._opts.defaultSource === 'server') {
             try {
-                const res = await fetch('/api/live/devices');
+                const res = await apiFetch('/api/live/devices');
                 const devices = await res.json();
                 const sel = this._els.deviceSelect;
                 if (sel) {
@@ -769,7 +769,7 @@ export class RecordingControl extends EventTarget {
 
         // Check if already running
         try {
-            const res = await fetch('/api/live/status');
+            const res = await apiFetch('/api/live/status');
             const data = await res.json();
             if (data.running) {
                 this._connectMetricsWs();
