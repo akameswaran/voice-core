@@ -282,5 +282,16 @@ class TestVowelClassifierHook:
         f2 = 1200.0
         bw1 = 250.0  # Wide, noisy transition
 
-        should_classify = (f0 > 80 and rms_db > -35 and f1 > 200 and f2 > 500 and bw1 < 200)
+        should_classify = (f0 > 80 and rms_db > -35 and f1 > 200 and f2 > 500 and 0 < bw1 < 200)
+        assert should_classify is False
+
+    def test_vowel_gate_bw1_zero_sentinel(self):
+        """Test vowel gate: bw1 == 0.0 (Parselmouth no-data sentinel) blocks classification."""
+        f0 = 150.0
+        rms_db = -20.0
+        f1 = 450.0
+        f2 = 1200.0
+        bw1 = 0.0  # Sentinel — Parselmouth found no valid bandwidth frames
+
+        should_classify = (f0 > 80 and rms_db > -35 and f1 > 200 and f2 > 500 and 0 < bw1 < 200)
         assert should_classify is False

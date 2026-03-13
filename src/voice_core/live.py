@@ -610,7 +610,7 @@ class LiveAnalyzer:
                     rms_db = self.latest["rms_db"]
 
                 # Apply vowel gate conditions
-                if f0 > 80 and rms_db > -35 and f1 > 200 and f2 > 500 and bw1 < 200:
+                if f0 > 80 and rms_db > -35 and f1 > 200 and f2 > 500 and 0 < bw1 < 200:
                     vowel = _classify_vowel(f1, f2)
                 else:
                     vowel = None
