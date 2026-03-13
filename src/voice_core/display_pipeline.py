@@ -224,8 +224,13 @@ class DisplayPipeline:
         else:
             delta_f_zone = "andro"
 
-        # --- Gesture bars (computed from accumulated means) ---
-        gesture_bars = _compute_gesture_bars(accum_delta_f, accum_f1, accum_f2)
+        # --- Gesture bars (accumulated means when available, raw frame fallback) ---
+        raw_f1 = raw_frame.get("f1_hz", 0.0)
+        raw_f2 = raw_frame.get("f2_hz", 0.0)
+        bar_delta_f = accum_delta_f if accum_delta_f > 0 else delta_f_hz_raw
+        bar_f1 = accum_f1 if accum_f1 > 0 else raw_f1
+        bar_f2 = accum_f2 if accum_f2 > 0 else raw_f2
+        gesture_bars = _compute_gesture_bars(bar_delta_f, bar_f1, bar_f2)
 
         # --- Weight factors (from accumulated H1-H2) ---
         weight_factors = _compute_weight_factors(accum_h1_h2)
@@ -289,8 +294,9 @@ class DisplayPipeline:
         display_mode = raw_frame.get("display_mode", "default") or "default"
 
         return {
-            # Widget values
-            "delta_f_hz": accum_delta_f,
+            # Widget values — use effective_delta_f (accumulated OR raw fallback)
+            # so widgets show data immediately, not only after accumulator fills.
+            "delta_f_hz": effective_delta_f,
             "delta_f_zone": delta_f_zone,
             "h1_h2_corrected_db": h1_h2_corrected_db,
             "f0_hz": f0_hz,
