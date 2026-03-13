@@ -18,6 +18,8 @@ logger = logging.getLogger(__name__)
 import numpy as np
 import soundfile as sf
 
+from voice_core.display_pipeline import DisplayPipeline
+
 
 class FrameLogger:
     """Append-only JSONL logger for combined audio+video telemetry.
@@ -141,6 +143,7 @@ class LiveAnalyzer:
         self.crepe_device = crepe_device
         self.formant_ceiling = formant_ceiling
         self.ring = RingBuffer(sr * 2)  # 2 seconds of audio
+        self._display_pipeline = DisplayPipeline(zone_classifier=zone_classifier)
         self.latest = {
             "ts": 0.0,
             "f0_hz": 0.0,
@@ -880,6 +883,12 @@ class LiveAnalyzer:
             frame["workshop"] = ws.evaluate_frame(frame)
         else:
             frame["workshop"] = None
+
+        # Enrich with accumulated display values (VowelAccumulator → DisplayPipeline).
+        # Updates delta_f_hz/zone, gesture_bars, stability_pct, trend, confidence, etc.
+        # Preserves coaching, exercise, workshop, warnings, session_t unchanged.
+        display_fields = self._display_pipeline.get_display_frame(frame)
+        frame.update(display_fields)
 
         # Log telemetry (rate-limited internally)
         self._frame_logger.log(frame)

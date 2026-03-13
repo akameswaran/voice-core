@@ -11,9 +11,6 @@ from typing import Callable
 from voice_core.vowel_accumulator import VowelAccumulator
 
 
-# RMS silence threshold: -40 dB (linear amplitude ≈ 0.01)
-_SILENCE_THRESHOLD_LINEAR = 10 ** (-40 / 20)  # ≈ 0.01
-
 # Warnings that suppress partial scores
 SCORE_SUPPRESSING_WARNINGS = {
     "breathiness_masking",
@@ -194,18 +191,18 @@ class DisplayPipeline:
         # --- Feed into accumulator ---
         if vowel:
             features = {
-                "f1": raw_frame.get("f1", 0.0),
-                "f2": raw_frame.get("f2", 0.0),
-                "f4": raw_frame.get("f4", 0.0),
+                "f1": raw_frame.get("f1_hz", 0.0),
+                "f2": raw_frame.get("f2_hz", 0.0),
+                "f4": raw_frame.get("f4_hz", 0.0),
                 "delta_f": raw_frame.get("delta_f_hz", 0.0),
                 "h1_h2": raw_frame.get("h1_h2_corrected_db", 0.0),
                 "f0": raw_frame.get("f0_hz", 0.0),
             }
             self._accumulator.add(vowel, ts, features)
 
-        # --- Silence / phrase boundary detection ---
-        rms = raw_frame.get("rms", 1.0)
-        self._phrase_boundary = rms < _SILENCE_THRESHOLD_LINEAR
+        # --- Silence / phrase boundary detection (rms_db is dB, threshold -40 dB) ---
+        rms_db = raw_frame.get("rms_db", -60.0)
+        self._phrase_boundary = rms_db < -40.0
 
         # --- Accumulated means (gesture bars use these) ---
         means = self._accumulator.get_accumulated_means()
@@ -264,8 +261,14 @@ class DisplayPipeline:
         }
 
         # --- Score suppression ---
-        warnings = raw_frame.get("warnings", []) or []
-        safety_active = bool(set(warnings) & SCORE_SUPPRESSING_WARNINGS)
+        # Warnings may be dicts (from live.py to_dict()) or plain strings.
+        raw_warnings = raw_frame.get("warnings", []) or []
+        warning_types = {
+            w["type"] if isinstance(w, dict) else w
+            for w in raw_warnings
+            if (isinstance(w, dict) and "type" in w) or isinstance(w, str)
+        }
+        safety_active = bool(warning_types & SCORE_SUPPRESSING_WARNINGS)
         score_suppression_reason: str | None = None
 
         if composite_confidence < 0.5:
@@ -273,7 +276,7 @@ class DisplayPipeline:
             score_suppression_reason = "low_confidence"
         elif safety_active:
             scores = None
-            suppressed = sorted(set(warnings) & SCORE_SUPPRESSING_WARNINGS)
+            suppressed = sorted(warning_types & SCORE_SUPPRESSING_WARNINGS)
             score_suppression_reason = ",".join(suppressed)
         else:
             raw_scores = raw_frame.get("scores")
