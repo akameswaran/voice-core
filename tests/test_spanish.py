@@ -71,6 +71,22 @@ def test_vowel_purity_too_few_frames():
     assert result is None
 
 
+def test_vowel_purity_misplaced_english_ae():
+    """English /æ/ (apple) for Spanish /a/ should score low on placement."""
+    from voice_core.spanish import score_vowel_purity
+    rng = np.random.default_rng(42)
+    # English /æ/: F1~660, F2~1700 — steady but wrong formant space
+    # Spanish /a/: F1~750, F2~1250
+    f1_frames = 660.0 + rng.normal(0, 10, size=20)
+    f2_frames = 1700.0 + rng.normal(0, 15, size=20)
+    result = score_vowel_purity(f1_frames, f2_frames, expected_vowel="A")
+    assert result is not None
+    assert result["misplaced"] is True
+    assert result["placement"] < 0.6  # far from Spanish /a/ norm
+    assert result["purity"] < 0.8  # combined score should reflect the problem
+    assert result["stability"] > 0.8  # but it IS stable (no drift)
+
+
 def test_spanish_ipa_to_vowel_mapping():
     """Spanish IPA vowel labels should map to our 5-vowel keys."""
     from voice_core.spanish import SPANISH_IPA_TO_VOWEL

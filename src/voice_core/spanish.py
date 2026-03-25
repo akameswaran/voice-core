@@ -61,11 +61,14 @@ def classify_vowel_spanish(f1: float, f2: float) -> str | None:
 def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
                        expected_vowel: str,
                        min_frames: int = 4) -> dict | None:
-    """Score vowel purity (monophthong stability) for a vowel segment.
+    """Score vowel purity (stability + placement) for a vowel segment.
 
-    Measures how stable F1/F2 stay throughout the vowel. Pure Spanish
-    monophthongs have minimal F1/F2 drift; English-speaker diphthongization
-    shows systematic F2 movement (e.g., /e/ -> [eI] has rising F2).
+    Two components:
+    1. **Stability** — how stable F1/F2 stay (detects diphthongization,
+       e.g., /e/ → [eɪ] shows rising F2).
+    2. **Placement** — how close the median F1/F2 are to the Spanish norm
+       (detects wrong vowel quality, e.g., English /æ/ "apple" instead of
+       Spanish /a/ "casa" — steady but in the wrong formant space).
 
     Args:
         f1_frames: Per-frame F1 values (Hz) across the vowel segment.
@@ -74,7 +77,9 @@ def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
         min_frames: Minimum frames needed for reliable measurement.
 
     Returns:
-        Dict with {purity: 0-1, diphthongized: bool, f1_drift_hz, f2_drift_hz}
+        Dict with {purity: 0-1, diphthongized: bool, misplaced: bool,
+                    f1_drift_hz, f2_drift_hz, f1_offset_hz, f2_offset_hz,
+                    stability: 0-1, placement: 0-1}
         or None if too few frames.
     """
     f1_frames = np.asarray(f1_frames, dtype=float)
@@ -115,7 +120,7 @@ def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
         f1_mid = f1_clean
         f2_mid = f2_clean
 
-    # 3. Measure drift: linear regression slope across steady-state region
+    # 3. Stability: measure drift via linear regression slope
     t = np.arange(len(f1_mid), dtype=float)
     f1_slope = np.polyfit(t, f1_mid, 1)[0] if len(f1_mid) > 1 else 0.0
     f2_slope = np.polyfit(t, f2_mid, 1)[0] if len(f2_mid) > 1 else 0.0
@@ -131,16 +136,44 @@ def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
     # Combined drift score (F2 drift is more perceptually salient for diphthongs)
     combined_drift = 0.3 * f1_norm_drift + 0.7 * f2_norm_drift
 
-    # Purity score: 1.0 = perfectly stable, 0.0 = heavily diphthongized
-    # Divisor 4.0 calibrated so native/TTS vowels score 0.80+ while
-    # English diphthongization (300+ Hz mid-vowel F2 shift) scores < 0.80
-    purity = max(0.0, min(1.0, 1.0 - combined_drift / 4.0))
+    # Stability score: 1.0 = perfectly stable, 0.0 = heavily diphthongized
+    stability = max(0.0, min(1.0, 1.0 - combined_drift / 4.0))
+
+    # 4. Placement: how close is the median F1/F2 to the Spanish norm?
+    #    Uses Mahalanobis-like distance normalized by each formant's std.
+    #    English /æ/ "apple" vs Spanish /a/: F1 offset ~90Hz, F2 offset ~450Hz
+    #    — the F2 difference alone is ~3 standard deviations.
+    f1_mean = float(np.mean(f1_mid))
+    f2_mean = float(np.mean(f2_mid))
+    f1_offset = abs(f1_mean - ref["f1_mean"])
+    f2_offset = abs(f2_mean - ref["f2_mean"])
+
+    f1_norm_offset = f1_offset / ref["f1_std"] if ref["f1_std"] > 0 else 0.0
+    f2_norm_offset = f2_offset / ref["f2_std"] if ref["f2_std"] > 0 else 0.0
+
+    # Euclidean distance in normalized formant space
+    norm_distance = (f1_norm_offset**2 + f2_norm_offset**2) ** 0.5
+
+    # Placement score: 1.0 = on target, 0.0 = far off
+    # Divisor 4.0: within ~1.5 std on each axis scores 0.85+,
+    # 3+ std away (like /æ/ for /a/) scores ~0.3
+    placement = max(0.0, min(1.0, 1.0 - norm_distance / 4.0))
+
+    # 5. Combined purity = blend of stability and placement
+    #    Both matter: a steady wrong vowel and an unstable right vowel
+    #    are both problems. Weight equally.
+    purity = 0.5 * stability + 0.5 * placement
 
     return {
         "purity": round(purity, 3),
         "diphthongized": bool(combined_drift > 0.8),
+        "misplaced": bool(norm_distance > 2.0),
         "f1_drift_hz": round(f1_drift, 1),
         "f2_drift_hz": round(f2_drift, 1),
+        "f1_offset_hz": round(f1_offset, 1),
+        "f2_offset_hz": round(f2_offset, 1),
+        "stability": round(stability, 3),
+        "placement": round(placement, 3),
     }
 
 
