@@ -104,6 +104,8 @@ export class RecordingControl extends EventTarget {
         this._audioWs = null;      // client→server binary PCM
         this._videoWs = null;      // client→server video features
 
+        this._isStarting = false;  // guard against concurrent start() calls
+
         // Camera manager state
         this._videoExtractor = null;
         this._cameraActive = false;
@@ -167,7 +169,10 @@ export class RecordingControl extends EventTarget {
 
     /** IDLE or MIC_OPEN → RECORDING */
     async start() {
+        if (this._isStarting) return;
         const prev = this._state;
+        if (prev !== 'idle' && prev !== 'mic_open') return;
+        this._isStarting = true;
         try {
             if (prev === 'idle') {
                 const source = this._getSource();
@@ -196,6 +201,8 @@ export class RecordingControl extends EventTarget {
                 this._closeMic();
                 this._setState('idle');
             }
+        } finally {
+            this._isStarting = false;
         }
     }
 
@@ -549,7 +556,11 @@ export class RecordingControl extends EventTarget {
             try {
                 const frame = JSON.parse(e.data);
                 if (frame.status === 'stopped') {
-                    this.stop();
+                    // Only honour "stopped" from server when we're actually recording.
+                    // Guards against stale frames arriving during session startup.
+                    if (this._state === 'recording') {
+                        this.stop();
+                    }
                     return;
                 }
                 this._currentFrame = frame;
@@ -1060,11 +1071,13 @@ export class RecordingControl extends EventTarget {
             // Skip with modifier keys
             if (e.ctrlKey || e.altKey || e.metaKey) return;
 
+            // Always prevent default (no page scroll), ignore key-repeat entirely
+            e.preventDefault();
+            if (e.repeat) return;
+
             if (this._state === 'idle' || this._state === 'mic_open') {
-                e.preventDefault();
                 this.start();
             } else if (this._state === 'recording') {
-                e.preventDefault();
                 this.stop();
             }
         });

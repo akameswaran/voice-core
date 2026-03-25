@@ -673,3 +673,8 @@ body.mode-recording .rec-indicator.active { display: flex; }
 .vc-review-recordings { margin-bottom: 24px; }
 
 .vc-review-rec-card { cursor: default; }
+
+.vc-review-collapsed .vc-review-list,
+.vc-review-collapsed .vc-review-empty { display: none !important; }
+.vc-review-toggle { font-size: 0.7rem; color: var(--text-dim); transition: transform 0.15s; }
+.vc-review-collapsible { user-select: none; }

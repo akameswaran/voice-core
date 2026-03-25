@@ -385,7 +385,6 @@ def analyze_pitch_crepe(y: np.ndarray, sr: int, device: str = "cuda:0") -> dict:
         import torchcrepe
 
         audio_tensor = torch.tensor(y_16k, dtype=torch.float32).unsqueeze(0).to(device)
-        # torchcrepe.predict returns (pitch, periodicity) when return_periodicity=True
         frequency, confidence = torchcrepe.predict(
             audio_tensor, 16000,
             hop_length=160,  # 10ms at 16kHz

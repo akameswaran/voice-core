@@ -11,19 +11,13 @@
  *   No users exist           → create form directly
  */
 
-import { getCookie, setCookie, listUsers, createUser } from './user_api.js';
+import { getCookie, setCookie, clearCookie, listUsers, createUser } from './user_api.js';
 
 const COOKIE_NAME = 'vc_user';
 
 export async function initGate({ redirectTo = '/practice', appName = 'Voice Coach' } = {}) {
   const forceSwitch = new URLSearchParams(location.search).has('switch');
   const cookieId = getCookie(COOKIE_NAME);
-
-  // Known user, not switching → silent instant redirect, no screen shown
-  if (cookieId && !forceSwitch) {
-    _confirm(cookieId, redirectTo);
-    return;
-  }
 
   _injectStyles();
   const mount = document.getElementById('gate-mount') || document.body;
@@ -34,6 +28,17 @@ export async function initGate({ redirectTo = '/practice', appName = 'Voice Coac
   } catch (e) {
     _renderError(mount, 'Could not reach server. Is it running?');
     return;
+  }
+
+  // Known user, not switching → validate ID still exists, then redirect
+  if (cookieId && !forceSwitch) {
+    if (users.find(u => u.id === cookieId)) {
+      _confirm(cookieId, redirectTo);
+      return;
+    }
+    // Stale cookie (user deleted or DB reset) — clear it and fall through to picker
+    clearCookie(COOKIE_NAME);
+    localStorage.removeItem('activeUserId');
   }
 
   if (users.length === 0) {

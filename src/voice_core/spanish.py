@@ -89,13 +89,38 @@ def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
 
     ref = norms[expected_vowel]
 
-    # Measure drift: linear regression slope across the segment
-    t = np.arange(len(f1_frames), dtype=float)
-    f1_slope = np.polyfit(t, f1_frames, 1)[0] if len(f1_frames) > 1 else 0.0
-    f2_slope = np.polyfit(t, f2_frames, 1)[0] if len(f2_frames) > 1 else 0.0
+    # 1. Filter formant-tracking outliers using the segment's own median.
+    #    Burg-algorithm trackers frequently jump between formant tracks,
+    #    producing values like F1=80 or F2=3351 for an /O/ vowel. We reject
+    #    frames far from the segment median rather than from citation norms,
+    #    so contextual variants (post-lateral /a/ with high F2) aren't lost.
+    f1_med = np.median(f1_frames)
+    f2_med = np.median(f2_frames)
+    f1_mad = max(np.median(np.abs(f1_frames - f1_med)), 30.0)  # floor 30 Hz
+    f2_mad = max(np.median(np.abs(f2_frames - f2_med)), 50.0)  # floor 50 Hz
+    mask = ((np.abs(f1_frames - f1_med) < 3.5 * f1_mad) &
+            (np.abs(f2_frames - f2_med) < 3.5 * f2_mad))
+    f1_clean = f1_frames[mask]
+    f2_clean = f2_frames[mask]
 
-    # Total drift over the segment (Hz)
-    n = len(f1_frames)
+    if len(f1_clean) < min_frames:
+        return None
+
+    # 2. Trim edges (~15% each side) to reduce coarticulation transitions
+    n_full = len(f1_clean)
+    trim = max(1, n_full // 6)
+    f1_mid = f1_clean[trim:n_full - trim]
+    f2_mid = f2_clean[trim:n_full - trim]
+    if len(f1_mid) < 3:
+        f1_mid = f1_clean
+        f2_mid = f2_clean
+
+    # 3. Measure drift: linear regression slope across steady-state region
+    t = np.arange(len(f1_mid), dtype=float)
+    f1_slope = np.polyfit(t, f1_mid, 1)[0] if len(f1_mid) > 1 else 0.0
+    f2_slope = np.polyfit(t, f2_mid, 1)[0] if len(f2_mid) > 1 else 0.0
+
+    n = len(f1_mid)
     f1_drift = abs(f1_slope * n)
     f2_drift = abs(f2_slope * n)
 
@@ -107,11 +132,13 @@ def score_vowel_purity(f1_frames: np.ndarray, f2_frames: np.ndarray,
     combined_drift = 0.3 * f1_norm_drift + 0.7 * f2_norm_drift
 
     # Purity score: 1.0 = perfectly stable, 0.0 = heavily diphthongized
-    purity = max(0.0, min(1.0, 1.0 - combined_drift / 3.0))
+    # Divisor 4.0 calibrated so native/TTS vowels score 0.80+ while
+    # English diphthongization (300+ Hz mid-vowel F2 shift) scores < 0.80
+    purity = max(0.0, min(1.0, 1.0 - combined_drift / 4.0))
 
     return {
         "purity": round(purity, 3),
-        "diphthongized": bool(combined_drift > 1.0),
+        "diphthongized": bool(combined_drift > 0.8),
         "f1_drift_hz": round(f1_drift, 1),
         "f2_drift_hz": round(f2_drift, 1),
     }

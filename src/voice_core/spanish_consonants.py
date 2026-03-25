@@ -52,9 +52,13 @@ def classify_sheismo(y: np.ndarray, sr: int,
     centroid_hz = float(np.mean(centroid_frames)) if len(centroid_frames) > 0 else 0.0
 
     # Classification logic:
-    # /ʃ/ (sheismo): high_freq_ratio > 0.4, centroid > 2500 Hz
+    # /ʃ/ (sheismo): high-freq energy + high centroid. The centroid is the
+    # stronger signal — a centroid > 4000 Hz with ratio > 0.25 is sheísmo.
     # /j/ (yeismo): low-freq dominant, centroid < 1500 Hz
-    if high_freq_ratio > 0.4 and centroid_hz > 2500:
+    if centroid_hz > 4000 and high_freq_ratio > 0.25:
+        classification = "sheismo"
+        confidence = min(1.0, high_freq_ratio * 1.5)
+    elif high_freq_ratio > 0.4 and centroid_hz > 2500:
         classification = "sheismo"
         confidence = min(1.0, high_freq_ratio * 1.5)
     elif high_freq_ratio < 0.2 or centroid_hz < 1500:
@@ -134,7 +138,7 @@ def classify_tap_r(y: np.ndarray, sr: int,
             if len(lengths) > 0:
                 longest = np.max(lengths)
                 closure_ms = float(longest * hop / sr * 1000)
-                has_closure = 5.0 < closure_ms < closure_max_ms
+                has_closure = 5.0 < closure_ms <= closure_max_ms
 
     if has_closure:
         classification = "tap"

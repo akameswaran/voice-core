@@ -101,7 +101,17 @@ export function initReview(config) {
         renderAnalysis,
         extractProgressPoint,
         formatSessionSummary,
+        labels: _labels,
+        sessionsCollapsed,
     } = config;
+
+    const labels = {
+        sessions: 'Sessions',
+        recordings: 'Recordings',
+        sessionsEmpty: 'No sessions yet. Start practicing!',
+        recordingsEmpty: 'Select a session to see recordings.',
+        ..._labels,
+    };
 
     const mount = typeof mountTo === 'string' ? document.querySelector(mountTo) : mountTo;
     if (!mount) {
@@ -124,24 +134,26 @@ export function initReview(config) {
                 <h3 class="vc-review-section-title">Progress</h3>
                 <div class="vc-review-chart-area" id="vc-review-chart"></div>
             </div>
-            <div class="vc-review-sessions">
-                <div class="vc-review-header">
-                    <h3 class="vc-review-section-title">Sessions</h3>
+            <div class="vc-review-sessions${sessionsCollapsed ? ' vc-review-collapsed' : ''}">
+                <div class="vc-review-header${sessionsCollapsed ? ' vc-review-collapsible' : ''}">
+                    <h3 class="vc-review-section-title">${labels.sessions}</h3>
                     <span class="vc-review-count" id="vc-review-session-count"></span>
+                    ${sessionsCollapsed ? '<span class="vc-review-toggle">&#9654;</span>' : ''}
                 </div>
                 <div id="vc-review-session-list" class="vc-review-list"></div>
                 <div id="vc-review-sessions-empty" class="vc-review-empty" style="display:none">
-                    <p>No sessions yet. Start practicing!</p>
+                    <p>${labels.sessionsEmpty}</p>
                 </div>
             </div>
-            <div class="vc-review-recordings">
-                <div class="vc-review-header">
-                    <h3 class="vc-review-section-title">Recordings</h3>
+            <div class="vc-review-recordings${sessionsCollapsed ? ' vc-review-collapsed' : ''}">
+                <div class="vc-review-header${sessionsCollapsed ? ' vc-review-collapsible' : ''}">
+                    <h3 class="vc-review-section-title">${labels.recordings}</h3>
                     <span class="vc-review-count" id="vc-review-rec-count"></span>
+                    ${sessionsCollapsed ? '<span class="vc-review-toggle">&#9654;</span>' : ''}
                 </div>
                 <div id="vc-review-rec-list" class="vc-review-list"></div>
                 <div id="vc-review-recs-empty" class="vc-review-empty" style="display:none">
-                    <p>Select a session to see recordings.</p>
+                    <p>${labels.recordingsEmpty}</p>
                 </div>
             </div>
         </div>
@@ -155,6 +167,17 @@ export function initReview(config) {
     const recsEmpty = mount.querySelector('#vc-review-recs-empty');
     const chartArea = mount.querySelector('#vc-review-chart');
 
+    // Collapse/expand toggle for sections
+    mount.querySelectorAll('.vc-review-collapsible').forEach(header => {
+        header.style.cursor = 'pointer';
+        header.addEventListener('click', () => {
+            const section = header.parentElement;
+            section.classList.toggle('vc-review-collapsed');
+            const toggle = header.querySelector('.vc-review-toggle');
+            if (toggle) toggle.textContent = section.classList.contains('vc-review-collapsed') ? '\u25B6' : '\u25BC';
+        });
+    });
+
     // Shared audio element
     state.audioEl = document.createElement('audio');
     state.audioEl.preload = 'none';
@@ -162,7 +185,7 @@ export function initReview(config) {
     // ── Session list rendering ─────────────────────────────
     async function loadSessions() {
         state.sessions = await fetchSessions();
-        sessionCount.textContent = `${state.sessions.length} sessions`;
+        sessionCount.textContent = `${state.sessions.length} ${labels.sessions.toLowerCase()}`;
         sessionsEmpty.style.display = state.sessions.length ? 'none' : '';
         sessionList.innerHTML = '';
 
