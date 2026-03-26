@@ -103,12 +103,49 @@ def align(wav_path: str, transcript: str,
     return output_textgrid
 
 
+MFA_SERVER_URL = os.environ.get("MFA_SERVER_URL", "http://127.0.0.1:9010")
+
+
+async def align_server(wav_path: str, transcript: str,
+                       language: str = "es") -> Optional[dict]:
+    """Align via persistent MFA server (fast — no subprocess startup).
+
+    Returns parsed {words, phones} dict directly, or None if server unavailable.
+    Falls back to align_async() subprocess if server is down.
+    """
+    import urllib.request
+    import urllib.error
+
+    wav_path = str(Path(wav_path).resolve())
+    payload = json.dumps({
+        "wav_path": wav_path,
+        "transcript": transcript,
+        "language": language,
+    }).encode()
+
+    try:
+        req = urllib.request.Request(
+            f"{MFA_SERVER_URL}/align",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(
+            None, lambda: urllib.request.urlopen(req, timeout=10))
+        result = json.loads(resp.read())
+        return {"words": result["words"], "phones": result["phones"]}
+    except (urllib.error.URLError, OSError, TimeoutError):
+        return None  # server not running — caller should fall back
+
+
 async def align_async(wav_path: str, transcript: str,
                       output_textgrid: Optional[str] = None,
                       language: str = "en") -> str:
     """Async version of align() using asyncio subprocess.
 
     Same args/return as align(), but non-blocking.
+    Slow (~5s per call due to subprocess startup). Prefer align_server() when available.
     """
     wav_path = str(Path(wav_path).resolve())
     if output_textgrid is None:
