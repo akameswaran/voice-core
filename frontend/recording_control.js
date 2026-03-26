@@ -81,6 +81,10 @@ export class RecordingControl extends EventTarget {
             defaultChannel: 1,
             cameraDefault: false,
             wsBasePath: '/ws/live',
+            vadEnabled: false,
+            vadSilenceMs: 1200,
+            vadThresholdDb: -40,
+            vadMinSpeechMs: 300,
             ...opts,
         };
 
@@ -89,6 +93,11 @@ export class RecordingControl extends EventTarget {
 
         this._state = 'idle';     // idle | mic_open | recording | processing
         this._currentFrame = null;
+
+        // VAD state
+        this._vadSpeechDetected = false;
+        this._vadSilenceStart = null;
+        this._vadSpeechStart = null;
 
         // Mic manager state
         this._audioStream = null;  // MediaStream
@@ -186,6 +195,11 @@ export class RecordingControl extends EventTarget {
             this._stopLevelMeter(); // stop local meter, server frames take over
             this._lastSavedFilename = null; // clear for new session
             this._setState('recording');
+
+            // Reset VAD state for new recording
+            this._vadSpeechDetected = false;
+            this._vadSilenceStart = null;
+            this._vadSpeechStart = null;
 
             // Start camera if enabled
             if (this._opts.showCamera && this._els.cameraToggle?.checked) {
@@ -413,6 +427,10 @@ export class RecordingControl extends EventTarget {
                 if (this._audioWs && this._audioWs.readyState === WebSocket.OPEN) {
                     this._audioWs.send(e.data);
                 }
+                // VAD: check energy of this PCM chunk
+                if (this._opts.vadEnabled && this._state === 'recording') {
+                    this._checkVad(e.data);
+                }
             };
         } else {
             // ScriptProcessor fallback: sends Float32 PCM
@@ -457,6 +475,39 @@ export class RecordingControl extends EventTarget {
         if (this._audioProcessor) {
             this._audioProcessor.disconnect();
             this._audioProcessor = null;
+        }
+    }
+
+    _checkVad(pcmBuffer) {
+        const samples = new Int16Array(pcmBuffer);
+        let sumSq = 0;
+        for (let i = 0; i < samples.length; i++) {
+            const s = samples[i] / 32768;
+            sumSq += s * s;
+        }
+        const rms = Math.sqrt(sumSq / samples.length);
+        const db = rms > 0 ? 20 * Math.log10(rms) : -100;
+        const now = performance.now();
+
+        if (db > this._opts.vadThresholdDb) {
+            // Speech detected
+            if (!this._vadSpeechDetected) {
+                this._vadSpeechStart = now;
+            }
+            this._vadSpeechDetected = true;
+            this._vadSilenceStart = null;
+        } else if (this._vadSpeechDetected) {
+            // Silence after speech
+            if (!this._vadSilenceStart) {
+                this._vadSilenceStart = now;
+            }
+            const speechDuration = now - (this._vadSpeechStart || now);
+            const silenceDuration = now - this._vadSilenceStart;
+            if (speechDuration >= this._opts.vadMinSpeechMs &&
+                silenceDuration >= this._opts.vadSilenceMs) {
+                console.log(`[vc-rc:vad] auto-stop after ${Math.round(silenceDuration)}ms silence`);
+                this.stop();
+            }
         }
     }
 
