@@ -83,8 +83,8 @@ export class RecordingControl extends EventTarget {
             wsBasePath: '/ws/live',
             vadEnabled: false,
             vadSilenceMs: 1200,
-            vadThresholdDb: -40,
-            vadMinSpeechMs: 300,
+            vadThresholdDb: -35,
+            vadMinSpeechMs: 500,
             ...opts,
         };
 
@@ -98,6 +98,7 @@ export class RecordingControl extends EventTarget {
         this._vadSpeechDetected = false;
         this._vadSilenceStart = null;
         this._vadSpeechStart = null;
+        this._vadSpeechFrames = 0;
 
         // Mic manager state
         this._audioStream = null;  // MediaStream
@@ -200,6 +201,7 @@ export class RecordingControl extends EventTarget {
             this._vadSpeechDetected = false;
             this._vadSilenceStart = null;
             this._vadSpeechStart = null;
+            this._vadSpeechFrames = 0;
 
             // Start camera if enabled
             if (this._opts.showCamera && this._els.cameraToggle?.checked) {
@@ -490,13 +492,16 @@ export class RecordingControl extends EventTarget {
         const now = performance.now();
 
         if (db > this._opts.vadThresholdDb) {
-            // Speech detected
-            if (!this._vadSpeechDetected) {
+            // Speech detected — count consecutive speech frames
+            this._vadSpeechFrames = (this._vadSpeechFrames || 0) + 1;
+            if (this._vadSpeechFrames >= 3 && !this._vadSpeechDetected) {
+                // Require 3+ consecutive frames above threshold to count as speech
                 this._vadSpeechStart = now;
+                this._vadSpeechDetected = true;
             }
-            this._vadSpeechDetected = true;
             this._vadSilenceStart = null;
         } else if (this._vadSpeechDetected) {
+            this._vadSpeechFrames = 0;
             // Silence after speech
             if (!this._vadSilenceStart) {
                 this._vadSilenceStart = now;
