@@ -45,6 +45,7 @@ const LS_KEYS = {
     browserDevice:   LS_PREFIX + 'browser_device',
     channel:         LS_PREFIX + 'channel',
     cameraCheckbox:  LS_PREFIX + 'camera_checkbox',
+    vadThreshold:    LS_PREFIX + 'vad_threshold',
 };
 
 // ─── RecordingControl ───────────────────────────────────────────────────────
@@ -94,7 +95,12 @@ export class RecordingControl extends EventTarget {
         this._state = 'idle';     // idle | mic_open | recording | processing
         this._currentFrame = null;
 
-        // VAD state
+        // VAD state — restore calibrated threshold from localStorage
+        const savedThreshold = localStorage.getItem(LS_KEYS.vadThreshold);
+        if (savedThreshold && this._opts.vadEnabled) {
+            this._opts.vadThresholdDb = parseFloat(savedThreshold);
+            console.log(`[vc-rc:vad] restored calibrated threshold: ${this._opts.vadThresholdDb.toFixed(1)} dBFS`);
+        }
         this._vadSpeechDetected = false;
         this._vadSilenceStart = null;
         this._vadSpeechStart = null;
@@ -169,9 +175,22 @@ export class RecordingControl extends EventTarget {
         }
     }
 
-    /** MIC_OPEN → IDLE: close mic, stop level meter */
+    /** MIC_OPEN → IDLE: close mic, stop level meter, calibrate VAD */
     stopCheck() {
         if (this._state !== 'mic_open') return;
+
+        // Calibrate VAD threshold from noise floor samples
+        if (this._opts.vadEnabled && this._noiseFloorSamples.length >= 10) {
+            const sorted = [...this._noiseFloorSamples].sort((a, b) => a - b);
+            // Use 25th percentile as noise floor (ignores speech peaks)
+            const p25 = sorted[Math.floor(sorted.length * 0.25)];
+            const margin = 12; // dB above noise floor
+            const calibrated = Math.min(p25 + margin, -20); // cap at -20 to avoid too-high threshold
+            this._opts.vadThresholdDb = calibrated;
+            try { localStorage.setItem(LS_KEYS.vadThreshold, calibrated.toFixed(1)); } catch (e) { /* ignore */ }
+            console.log(`[vc-rc:vad] calibrated threshold: ${calibrated.toFixed(1)} dBFS (noise floor p25: ${p25.toFixed(1)} dBFS)`);
+        }
+
         this._stopLevelMeter();
         this._closeMic();
         this._setState('idle');
@@ -464,8 +483,16 @@ export class RecordingControl extends EventTarget {
                     console.log(`[vc-rc:audio] ${info}, using ch${ch}, sr: ${this._audioCtx.sampleRate}`);
                 }
 
-                const pcm = e.inputBuffer.getChannelData(ch);
-                this._audioWs.send(pcm.buffer.slice(0));
+                const float32 = e.inputBuffer.getChannelData(ch);
+                // Convert Float32 → Int16 to match AudioWorklet format
+                const int16 = new Int16Array(float32.length);
+                for (let i = 0; i < float32.length; i++) {
+                    int16[i] = Math.max(-32768, Math.min(32767, float32[i] * 32768));
+                }
+                this._audioWs.send(int16.buffer);
+                if (this._opts.vadEnabled && this._state === 'recording') {
+                    this._checkVad(int16.buffer);
+                }
             };
         }
 
