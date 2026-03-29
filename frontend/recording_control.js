@@ -38,6 +38,11 @@ const LEVEL_ZONES = {
     // above -6 = too hot
 };
 
+const VAD_NOISE_EMA_ALPHA = 0.05;   // slow noise floor adaptation
+const VAD_NOISE_MARGIN_DB = 10;     // speech must be this far above noise floor
+const VAD_NOISE_FLOOR_MIN = -60;    // don't let noise estimate drift below this
+const VAD_NOISE_FLOOR_MAX = -20;    // don't let noise estimate climb above this
+
 const LS_PREFIX = 'vc_rc_';
 const LS_KEYS = {
     source:          LS_PREFIX + 'source',
@@ -105,6 +110,9 @@ export class RecordingControl extends EventTarget {
         this._vadSilenceStart = null;
         this._vadSpeechStart = null;
         this._vadSpeechFrames = 0;
+
+        // Adaptive noise floor — seeded from calibration or default
+        this._vadNoiseFloor = this._opts.vadThresholdDb;  // start from static threshold
 
         // Mic manager state
         this._audioStream = null;  // MediaStream
@@ -185,8 +193,9 @@ export class RecordingControl extends EventTarget {
             // Use 25th percentile as noise floor (ignores speech peaks)
             const p25 = sorted[Math.floor(sorted.length * 0.25)];
             const margin = 12; // dB above noise floor
-            const calibrated = Math.min(p25 + margin, -20); // cap at -20 to avoid too-high threshold
+            const calibrated = Math.min(p25 + margin, -20);
             this._opts.vadThresholdDb = calibrated;
+            this._vadNoiseFloor = calibrated;  // seed adaptive tracker
             try { localStorage.setItem(LS_KEYS.vadThreshold, calibrated.toFixed(1)); } catch (e) { /* ignore */ }
             console.log(`[vc-rc:vad] calibrated threshold: ${calibrated.toFixed(1)} dBFS (noise floor p25: ${p25.toFixed(1)} dBFS)`);
         }
@@ -221,6 +230,8 @@ export class RecordingControl extends EventTarget {
             this._vadSilenceStart = null;
             this._vadSpeechStart = null;
             this._vadSpeechFrames = 0;
+            // Seed adaptive noise floor from calibrated value (or default)
+            this._vadNoiseFloor = this._opts.vadThresholdDb;
 
             // Start camera if enabled
             if (this._opts.showCamera && this._els.cameraToggle?.checked) {
@@ -518,27 +529,35 @@ export class RecordingControl extends EventTarget {
         const db = rms > 0 ? 20 * Math.log10(rms) : -100;
         const now = performance.now();
 
-        if (db > this._opts.vadThresholdDb) {
+        // Adaptive threshold: noise floor + margin
+        const speechThreshold = this._vadNoiseFloor + VAD_NOISE_MARGIN_DB;
+
+        if (db > speechThreshold) {
             // Speech detected — count consecutive speech frames
             this._vadSpeechFrames = (this._vadSpeechFrames || 0) + 1;
             if (this._vadSpeechFrames >= 3 && !this._vadSpeechDetected) {
-                // Require 3+ consecutive frames above threshold to count as speech
                 this._vadSpeechStart = now;
                 this._vadSpeechDetected = true;
+                console.log(`[vc-rc:vad] speech onset (floor=${this._vadNoiseFloor.toFixed(1)}, thresh=${speechThreshold.toFixed(1)}, db=${db.toFixed(1)})`);
             }
             this._vadSilenceStart = null;
-        } else if (this._vadSpeechDetected) {
-            this._vadSpeechFrames = 0;
-            // Silence after speech
-            if (!this._vadSilenceStart) {
-                this._vadSilenceStart = now;
-            }
-            const speechDuration = now - (this._vadSpeechStart || now);
-            const silenceDuration = now - this._vadSilenceStart;
-            if (speechDuration >= this._opts.vadMinSpeechMs &&
-                silenceDuration >= this._opts.vadSilenceMs) {
-                console.log(`[vc-rc:vad] auto-stop after ${Math.round(silenceDuration)}ms silence`);
-                this.stop();
+        } else {
+            // Below speech threshold — update noise floor estimate
+            const clamped = Math.max(VAD_NOISE_FLOOR_MIN, Math.min(VAD_NOISE_FLOOR_MAX, db));
+            this._vadNoiseFloor = VAD_NOISE_EMA_ALPHA * clamped + (1 - VAD_NOISE_EMA_ALPHA) * this._vadNoiseFloor;
+
+            if (this._vadSpeechDetected) {
+                this._vadSpeechFrames = 0;
+                if (!this._vadSilenceStart) {
+                    this._vadSilenceStart = now;
+                }
+                const speechDuration = now - (this._vadSpeechStart || now);
+                const silenceDuration = now - this._vadSilenceStart;
+                if (speechDuration >= this._opts.vadMinSpeechMs &&
+                    silenceDuration >= this._opts.vadSilenceMs) {
+                    console.log(`[vc-rc:vad] auto-stop after ${Math.round(silenceDuration)}ms silence (floor=${this._vadNoiseFloor.toFixed(1)})`);
+                    this.stop();
+                }
             }
         }
     }
