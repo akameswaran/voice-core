@@ -1560,14 +1560,14 @@ git commit -m "feat: add femme converse page and update nav"
 cd /home/ak/Projects/VoiceCoaches/voice-core
 git checkout main
 git merge feat/spanish-stress
-GH_TOKEN=REDACTED_PAT git push
+git push
 ```
 
 - [ ] **Step 2: Push femme-voice-coach**
 
 ```bash
 cd /home/ak/Projects/VoiceCoaches/femme-voice-coach
-GH_TOKEN=REDACTED_PAT git push
+git push
 ```
 
 ---
