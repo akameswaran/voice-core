@@ -10,3 +10,24 @@ build/
 .claude/
 # Worktrees
 .worktrees/
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.*
+
+# Databases
+*.db
+*.sqlite
+*.sqlite-*
+*.sqlite3
+
+# User data
+recordings/
+
+# Node / test caches
+node_modules/
+.pytest_cache/
